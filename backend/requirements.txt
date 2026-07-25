@@ -1,0 +1,27 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Config / validation ---
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# --- Database ---
+sqlalchemy==2.0.36
+
+# --- Vector database ---
+qdrant-client==1.12.1
+
+# --- Embeddings ---
+sentence-transformers==3.3.1
+open-clip-torch==2.29.0
+torch==2.5.1
+
+# --- Document parsing ---
+pymupdf==1.25.1
+python-docx==1.1.2
+
+# --- Image processing ---
+Pillow==11.0.0
