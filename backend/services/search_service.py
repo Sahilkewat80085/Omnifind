@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.vectorstore.qdrant_client import SearchHit, VectorService
@@ -46,6 +48,7 @@ class SearchService:
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:
         p = hit.payload
+        file_path = Path(p["path"])
         return DocumentResult(
             file_id=p["file_id"],
             file_name=p["file_name"],
@@ -54,12 +57,14 @@ class SearchService:
             page_number=p.get("page_number"),
             chunk_text=p["chunk_text"],
             chunk_index=p["chunk_index"],
+            exists=file_path.is_file(),
         )
 
     @staticmethod
     def _to_image_result(hit: SearchHit) -> ImageResult:
         p = hit.payload
         dims = p.get("image_dimensions", {})
+        file_path = Path(p["path"])
         return ImageResult(
             file_id=p["file_id"],
             file_name=p["file_name"],
@@ -67,4 +72,5 @@ class SearchService:
             similarity=hit.score,
             width=dims.get("width", 0),
             height=dims.get("height", 0),
+            exists=file_path.is_file(),
         )
