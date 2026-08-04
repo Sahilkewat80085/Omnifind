@@ -12,6 +12,7 @@ class DocumentResult(BaseModel):
     page_number: int | None
     chunk_text: str
     chunk_index: int
+    exists: bool = True
 
 
 class ImageResult(BaseModel):
@@ -22,6 +23,7 @@ class ImageResult(BaseModel):
     similarity: float
     width: int
     height: int
+    exists: bool = True
 
 
 class SearchResponse(BaseModel):
