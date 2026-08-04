@@ -184,25 +184,38 @@ elif page == "Search":
         for res in results:
             with st.container(border=True):
                 left, right = st.columns([4, 1])
+                file_exists = res.get("exists", True) and Path(res["path"]).is_file()
 
                 with left:
                     if res["result_type"] == "document":
                         page_note = f' — page {res["page_number"]}' if res.get("page_number") else ""
-                        st.markdown(f'**\U0001F4C4 {res["file_name"]}**{page_note}')
+                        st.markdown(f'**📄 {res["file_name"]}**{page_note}')
                         st.caption(res["path"])
+                        if not file_exists:
+                            st.error("File not found")
                         st.write(res["chunk_text"])
                     else:
-                        st.markdown(f'**\U0001F5BC️ {res["file_name"]}**  ({res["width"]}×{res["height"]})')
+                        st.markdown(f'**🖼️ {res["file_name"]}**  ({res["width"]}×{res["height"]})')
                         st.caption(res["path"])
-                        if Path(res["path"]).exists():
+                        if not file_exists:
+                            st.error("File not found")
+                        else:
                             st.image(res["path"], width=240)
 
                 with right:
                     st.metric("Match", f'{res["similarity"] * 100:.0f}%')
                     st.progress(min(max(res["similarity"], 0.0), 1.0))
                     if st.button("Open file", key=f'open-{res["file_id"]}-{res.get("chunk_index", 0)}'):
-                        try:
-                            requests.post(api_url("/files/open"), json={"path": res["path"]}, timeout=5)
-                            st.toast(f'Opened {res["file_name"]}')
-                        except requests.exceptions.RequestException as e:
-                            st.error(f"Could not open file: {e}")
+                        if not file_exists:
+                            st.error("File not found")
+                        else:
+                            try:
+                                response = requests.post(api_url("/files/open"), json={"path": res["path"]}, timeout=5)
+                                if response.status_code == 404:
+                                    st.error("File not found")
+                                elif response.status_code == 200:
+                                    st.toast(f'Opened {res["file_name"]}')
+                                else:
+                                    st.error(f"Could not open file: {response.text}")
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"Could not open file: {e}")
