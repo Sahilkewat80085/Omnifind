@@ -15,7 +15,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-DEBOUNCE_SECONDS = 1.5
+DEBOUNCE_SECONDS = 0.5
 
 
 class _FolderEventHandler(FileSystemEventHandler):
@@ -46,8 +46,7 @@ class _FolderEventHandler(FileSystemEventHandler):
     def on_deleted(self, event: FileSystemEvent) -> None:
         if event.is_directory or self._should_ignore(event.src_path):
             return
-        if classify_extension(Path(event.src_path).suffix):
-            self.queue_change("delete", event.src_path)
+        self.queue_change("delete", event.src_path)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if event.is_directory:
@@ -138,9 +137,32 @@ class FolderWatcherService:
                     return root
         return None
 
+    def process_pending_now(self) -> None:
+        """Flushes and processes all currently queued file changes immediately."""
+        with self._lock:
+            ready_tasks = list(self._pending_events.items())
+            self._pending_events.clear()
+
+        if not ready_tasks:
+            return
+
+        db = SessionLocal()
+        try:
+            indexing_service = IndexingService(MetadataService(db))
+            for path, (action, _) in ready_tasks:
+                if action == "delete":
+                    indexing_service.remove_single_file(path)
+                elif action == "upsert":
+                    root = self._find_root_for_file(path)
+                    indexing_service.index_single_file(path, root_folder=root)
+        except Exception:
+            logger.exception("Error processing real-time file watcher queue")
+        finally:
+            db.close()
+
     def _debounce_worker(self) -> None:
         while not self._stop_event.is_set():
-            time.sleep(0.5)
+            time.sleep(0.2)
             now = time.time()
             ready_tasks = []
 

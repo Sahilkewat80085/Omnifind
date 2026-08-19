@@ -30,23 +30,24 @@ class MetadataService:
         image_height: int | None = None,
         language: str | None = None,
     ) -> FileMetadata:
-        record = self.db.scalar(select(FileRecord).where(FileRecord.path == path))
+        resolved = str(Path(path).resolve())
+        record = self.db.scalar(select(FileRecord).where(FileRecord.path == resolved))
         if record is None:
             record = FileRecord(
                 file_name=file_name,
                 file_type=file_type.value,
                 extension=extension,
-                path=path,
+                path=resolved,
                 size_bytes=size_bytes,
             )
             self.db.add(record)
-            logger.info("Registering new file: %s", path)
+            logger.info("Registering new file: %s", resolved)
         else:
             record.file_name = file_name
             record.file_type = file_type.value
             record.extension = extension
             record.size_bytes = size_bytes
-            logger.info("Re-indexing existing file: %s", path)
+            logger.info("Re-indexing existing file: %s", resolved)
 
         record.chunk_count = chunk_count
         record.image_width = image_width
@@ -58,7 +59,8 @@ class MetadataService:
         return FileMetadata.model_validate(record)
 
     def get_by_path(self, path: str) -> FileMetadata | None:
-        record = self.db.scalar(select(FileRecord).where(FileRecord.path == path))
+        resolved = str(Path(path).resolve())
+        record = self.db.scalar(select(FileRecord).where(FileRecord.path == resolved))
         return FileMetadata.model_validate(record) if record else None
 
     def get_by_id(self, file_id: str) -> FileMetadata | None:
@@ -76,7 +78,8 @@ class MetadataService:
         return list(self.db.scalars(select(FileRecord.path)).all())
 
     def delete_by_path(self, path: str) -> bool:
-        record = self.db.scalar(select(FileRecord).where(FileRecord.path == path))
+        resolved = str(Path(path).resolve())
+        record = self.db.scalar(select(FileRecord).where(FileRecord.path == resolved))
         if record is None:
             return False
         self.db.delete(record)
@@ -86,7 +89,8 @@ class MetadataService:
     def delete_paths(self, paths: Sequence[str]) -> int:
         if not paths:
             return 0
-        records = self.db.scalars(select(FileRecord).where(FileRecord.path.in_(paths))).all()
+        resolved_paths = [str(Path(p).resolve()) for p in paths]
+        records = self.db.scalars(select(FileRecord).where(FileRecord.path.in_(resolved_paths))).all()
         for record in records:
             self.db.delete(record)
         self.db.commit()
