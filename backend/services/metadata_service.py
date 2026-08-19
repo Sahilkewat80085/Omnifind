@@ -1,10 +1,13 @@
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from database.models import FileRecord
+from database.models import FileRecord, WatchedFolder
 from models.schemas.file_schemas import FileMetadata, FileType, IndexStats
+from models.schemas.index_schemas import WatchedFolderResponse
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -70,11 +73,6 @@ class MetadataService:
         return [FileMetadata.model_validate(r) for r in records]
 
     def list_paths(self) -> list[str]:
-        """Every indexed path, without building a schema object per row.
-
-        Used by the re-index prune, which only needs to know which paths are
-        on record so it can check them against the disk.
-        """
         return list(self.db.scalars(select(FileRecord.path)).all())
 
     def delete_by_path(self, path: str) -> bool:
@@ -86,12 +84,6 @@ class MetadataService:
         return True
 
     def delete_paths(self, paths: Sequence[str]) -> int:
-        """Delete many records in one transaction, returning how many went.
-
-        A folder scan can find hundreds of files gone at once (a cleared
-        downloads folder, a moved project); committing per row would make the
-        prune slower than the indexing it follows.
-        """
         if not paths:
             return 0
         records = self.db.scalars(select(FileRecord).where(FileRecord.path.in_(paths))).all()
@@ -131,3 +123,43 @@ class MetadataService:
             total_chunks=total_chunks,
             total_size_bytes=total_size_bytes,
         )
+
+    # --- Watched Folder Operations ---
+
+    def add_watched_folder(self, path: str) -> WatchedFolderResponse:
+        resolved = str(Path(path).resolve())
+        folder = self.db.scalar(select(WatchedFolder).where(WatchedFolder.path == resolved))
+        if folder is None:
+            folder = WatchedFolder(path=resolved, is_active=True)
+            self.db.add(folder)
+            logger.info("Added watched folder: %s", resolved)
+        else:
+            folder.is_active = True
+            logger.info("Re-activated watched folder: %s", resolved)
+        self.db.commit()
+        self.db.refresh(folder)
+        return WatchedFolderResponse.model_validate(folder)
+
+    def remove_watched_folder(self, path: str) -> bool:
+        resolved = str(Path(path).resolve())
+        folder = self.db.scalar(select(WatchedFolder).where(WatchedFolder.path == resolved))
+        if folder is None:
+            return False
+        self.db.delete(folder)
+        self.db.commit()
+        logger.info("Removed watched folder: %s", resolved)
+        return True
+
+    def list_watched_folders(self, only_active: bool = True) -> list[WatchedFolderResponse]:
+        stmt = select(WatchedFolder)
+        if only_active:
+            stmt = stmt.where(WatchedFolder.is_active.is_(True))
+        folders = self.db.scalars(stmt).all()
+        return [WatchedFolderResponse.model_validate(f) for f in folders]
+
+    def update_watched_folder_scanned(self, path: str) -> None:
+        resolved = str(Path(path).resolve())
+        folder = self.db.scalar(select(WatchedFolder).where(WatchedFolder.path == resolved))
+        if folder is not None:
+            folder.last_scanned_at = datetime.now(timezone.utc)
+            self.db.commit()
