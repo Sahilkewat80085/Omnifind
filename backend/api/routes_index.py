@@ -9,6 +9,7 @@ from models.schemas.index_schemas import (
     IndexStatusResponse,
     ScanRequest,
     WatchedFolderResponse,
+    WatcherActivityResponse,
     WatchFolderRequest,
 )
 from services.folder_watcher_service import FolderWatcherService, get_watcher_service
@@ -98,3 +99,20 @@ def remove_watch_folder(
     if not removed:
         raise HTTPException(status_code=404, detail="Folder is not currently watched")
     return {"status": "unwatched", "path": path}
+
+
+@router.get("/activity", response_model=list[WatcherActivityResponse])
+def get_watcher_activity(
+    since: float = 0.0,
+    watcher_service: FolderWatcherService = Depends(get_watcher_service),
+) -> list[WatcherActivityResponse]:
+    activities = watcher_service.get_recent_activity(since=since)
+    return [
+        WatcherActivityResponse(
+            file_name=a.file_name,
+            path=a.path,
+            action=a.action,
+            timestamp=a.timestamp,
+        )
+        for a in activities
+    ]

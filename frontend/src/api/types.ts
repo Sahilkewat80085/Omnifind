@@ -53,6 +53,13 @@ export interface WatchedFolder {
   last_scanned_at: string | null;
 }
 
+export interface WatcherActivity {
+  file_name: string;
+  path: string;
+  action: "indexed" | "removed";
+  timestamp: number;
+}
+
 export interface DocumentResult {
   result_type: "document";
   file_id: string;

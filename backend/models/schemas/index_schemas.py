@@ -28,3 +28,10 @@ class WatchedFolderResponse(BaseModel):
     last_scanned_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WatcherActivityResponse(BaseModel):
+    file_name: str
+    path: str
+    action: str
+    timestamp: float

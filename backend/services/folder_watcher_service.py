@@ -2,6 +2,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -16,6 +17,14 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 DEBOUNCE_SECONDS = 0.5
+
+
+@dataclass
+class WatcherActivityEvent:
+    file_name: str
+    path: str
+    action: str  # "indexed" | "removed"
+    timestamp: float
 
 
 class _FolderEventHandler(FileSystemEventHandler):
@@ -64,6 +73,7 @@ class FolderWatcherService:
         self._observer: Observer | None = None
         self._watched_roots: dict[str, object] = {}
         self._pending_events: dict[str, tuple[str, float]] = {}  # path -> (action, timestamp)
+        self._recent_activity: list[WatcherActivityEvent] = []
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -124,6 +134,24 @@ class FolderWatcherService:
         with self._lock:
             return list(self._watched_roots.keys())
 
+    def get_recent_activity(self, since: float = 0.0) -> list[WatcherActivityEvent]:
+        with self._lock:
+            return [evt for evt in self._recent_activity if evt.timestamp > since]
+
+    def _record_activity(self, file_path: str, action: str) -> None:
+        p = Path(file_path)
+        evt = WatcherActivityEvent(
+            file_name=p.name,
+            path=str(p.resolve()),
+            action=action,
+            timestamp=time.time(),
+        )
+        with self._lock:
+            self._recent_activity.append(evt)
+            # Keep last 50 events in memory
+            if len(self._recent_activity) > 50:
+                self._recent_activity = self._recent_activity[-50:]
+
     def _queue_change(self, action: str, file_path: str) -> None:
         resolved = str(Path(file_path).resolve())
         with self._lock:
@@ -151,10 +179,12 @@ class FolderWatcherService:
             indexing_service = IndexingService(MetadataService(db))
             for path, (action, _) in ready_tasks:
                 if action == "delete":
-                    indexing_service.remove_single_file(path)
+                    if indexing_service.remove_single_file(path):
+                        self._record_activity(path, "removed")
                 elif action == "upsert":
                     root = self._find_root_for_file(path)
-                    indexing_service.index_single_file(path, root_folder=root)
+                    if indexing_service.index_single_file(path, root_folder=root):
+                        self._record_activity(path, "indexed")
         except Exception:
             logger.exception("Error processing real-time file watcher queue")
         finally:
@@ -180,10 +210,12 @@ class FolderWatcherService:
                 indexing_service = IndexingService(MetadataService(db))
                 for path, action in ready_tasks:
                     if action == "delete":
-                        indexing_service.remove_single_file(path)
+                        if indexing_service.remove_single_file(path):
+                            self._record_activity(path, "removed")
                     elif action == "upsert":
                         root = self._find_root_for_file(path)
-                        indexing_service.index_single_file(path, root_folder=root)
+                        if indexing_service.index_single_file(path, root_folder=root):
+                            self._record_activity(path, "indexed")
             except Exception:
                 logger.exception("Error processing real-time file watcher queue")
             finally:

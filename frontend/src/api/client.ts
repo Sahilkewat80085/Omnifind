@@ -6,6 +6,7 @@ import type {
   IndexStatus,
   SearchResponse,
   WatchedFolder,
+  WatcherActivity,
 } from "./types";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
@@ -67,6 +68,9 @@ export const api = {
   stats: () => request<IndexStats>("/index/stats"),
 
   indexStatus: () => request<IndexStatus>("/index/status"),
+
+  watcherActivity: (since = 0) =>
+    request<WatcherActivity[]>(`/index/activity?since=${since}`),
 
   startIndexing: (path: string) =>
     request<{ status: string }>("/index/scan", {

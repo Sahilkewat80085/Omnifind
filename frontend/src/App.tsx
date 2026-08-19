@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { api } from "./api/client";
 import { Banner } from "./components/Banner";
 import { Sidebar, type Page } from "./components/Sidebar";
+import { ToastContainer, type ToastMessage } from "./components/Toast";
 import { useHealth } from "./hooks/useHealth";
 import { AskPage } from "./pages/AskPage";
 import { Dashboard } from "./pages/Dashboard";
@@ -9,15 +11,43 @@ import { IndexPage } from "./pages/IndexPage";
 import { SearchPage } from "./pages/SearchPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
-/**
- * Navigation is plain component state rather than a router. The app has five
- * flat screens with no deep links or URL parameters, and keeping it
- * router-free avoids the file:// base-path problem when this same bundle is
- * later wrapped in Tauri.
- */
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const { health, online, refresh } = useHealth();
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const lastActivityTimestamp = useRef<number>(Date.now() / 1000);
+
+  // Poll for background filesystem watcher indexing activity
+  useEffect(() => {
+    if (online === false) return;
+
+    const interval = setInterval(() => {
+      api
+        .watcherActivity(lastActivityTimestamp.current)
+        .then((activities) => {
+          if (activities.length > 0) {
+            const latest = Math.max(...activities.map((a) => a.timestamp));
+            lastActivityTimestamp.current = latest;
+
+            const newToasts: ToastMessage[] = activities.map((a) => ({
+              id: `${a.path}-${a.timestamp}-${Math.random()}`,
+              title: a.file_name,
+              description: a.path,
+              action: a.action,
+            }));
+
+            setToasts((prev) => [...prev, ...newToasts]);
+          }
+        })
+        .catch(() => {});
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [online]);
+
+  function handleDismissToast(id: string) {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }
 
   return (
     <div className="app">
@@ -40,6 +70,8 @@ export default function App() {
           <SettingsPage health={health} online={online} onRefresh={refresh} />
         )}
       </main>
+
+      <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />
     </div>
   );
 }
