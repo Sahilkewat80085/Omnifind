@@ -10,10 +10,11 @@ from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.parsers.code_parser import parse_code
 from core.parsers.document_parser import parse_document
 from core.parsers.image_reader import read_image_info
-from core.scanner.folder_scanner import FolderScanner, ScannedFile
+from core.scanner.folder_scanner import FolderScanner, ScannedFile, classify_extension
 from core.vectorstore.qdrant_client import VectorService
 from models.schemas.file_schemas import FileType
 from services.metadata_service import MetadataService
+from utils.config import get_settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -62,23 +63,50 @@ class IndexingService:
         removed_count = self._remove_deleted_files(root_path, {f.path for f in files})
         return IndexSummary(indexed=indexed_count, removed=removed_count)
 
+    def index_single_file(self, file_path: str, root_folder: str | None = None) -> bool:
+        """Indexes or updates a single file in Qdrant and SQLite in real time."""
+        path_obj = Path(file_path).resolve()
+        if not path_obj.exists() or not path_obj.is_file():
+            return False
+
+        ext = path_obj.suffix.lower()
+        file_type = classify_extension(ext)
+        if file_type is None:
+            return False
+
+        try:
+            size_bytes = path_obj.stat().st_size
+        except OSError:
+            return False
+
+        if file_type == FileType.code and size_bytes > get_settings().code_max_file_bytes:
+            return False
+
+        scanned = ScannedFile(
+            path=str(path_obj),
+            file_name=path_obj.name,
+            extension=ext,
+            file_type=file_type,
+            size_bytes=size_bytes,
+        )
+
+        root = root_folder or str(path_obj.parent)
+        try:
+            self._index_file(scanned, root)
+            logger.info("Real-time auto-indexed file: %s", scanned.path)
+            return True
+        except Exception:
+            logger.exception("Failed to auto-index file: %s", scanned.path)
+            return False
+
+    def remove_single_file(self, file_path: str) -> bool:
+        """Removes a single file from Qdrant vectors and SQLite metadata in real time."""
+        resolved = str(Path(file_path).resolve())
+        logger.info("Real-time removing file from index: %s", resolved)
+        self._vector_service.delete_by_path(resolved)
+        return self._metadata_service.delete_by_path(resolved)
+
     def _remove_deleted_files(self, root: Path, seen_paths: set[str]) -> int:
-        """Drop index entries for files that have since been deleted from disk.
-
-        A scan only ever adds what it finds, so without this step a file the
-        user deleted keeps its row in SQLite and its vectors in Qdrant
-        forever: it still ranks in search, and "Open" then fails with a file
-        not found. Re-scanning a folder has to mean "make the index match the
-        folder", not "add whatever is there now".
-
-        Two guards keep this from deleting more than it should. Only records
-        *under the folder being scanned* are candidates, so indexing folder A
-        never prunes what was indexed from folder B. And a candidate is only
-        removed once `exists()` confirms it is really gone — a file the
-        scanner merely skipped this run (an unreadable directory, a source
-        file that grew past `code_max_file_bytes`, a newly ignored directory)
-        is still on disk and keeps its entry.
-        """
         seen = {os.path.normcase(path) for path in seen_paths}
         stale = [
             path
@@ -95,8 +123,6 @@ class IndexingService:
         return self._metadata_service.delete_paths(stale)
 
     def _index_file(self, scanned: ScannedFile, root: str) -> None:
-        # Clear any vectors from a previous indexing run of this same path
-        # first, so re-scanning never produces duplicate chunks.
         self._vector_service.delete_by_path(scanned.path)
 
         registered = self._metadata_service.upsert_file(
@@ -147,9 +173,6 @@ class IndexingService:
         chunks = chunk_code(parsed.text, parsed.language)
 
         if chunks:
-            # The path relative to the folder the user indexed — "services/
-            # rag_service.py" rather than the machine-specific absolute path,
-            # which would put this user's home directory into every vector.
             try:
                 relative_path = Path(scanned.path).relative_to(Path(root).resolve()).as_posix()
             except ValueError:
