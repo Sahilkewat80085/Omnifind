@@ -81,6 +81,48 @@ class VectorService:
         )
         self._client.upsert(collection_name=self._collection, points=[point])
 
+    def upsert_code_chunk(
+        self,
+        *,
+        file_id: str,
+        file_name: str,
+        path: str,
+        language: str,
+        symbol: str | None,
+        line_start: int,
+        line_end: int,
+        chunk_text: str,
+        chunk_index: int,
+        vector: list[float],
+    ) -> None:
+        """Store a code chunk in the *text* vector, alongside documents.
+
+        Code shares the text partition rather than getting a third named
+        vector, for two reasons. Adding a vector to a live collection means
+        recreating it, which would throw away every document and image already
+        indexed. And unlike an image, code is text a language model can read —
+        sharing the partition is what lets /ask cite a function without any
+        extra retrieval path. `file_type` in the payload is what separates the
+        two on the way out.
+        """
+        point = qmodels.PointStruct(
+            id=str(uuid.uuid4()),
+            vector={TEXT_VECTOR_NAME: vector},
+            payload={
+                "file_id": file_id,
+                "file_name": file_name,
+                "file_type": "code",
+                "path": path,
+                "language": language,
+                "symbol": symbol,
+                "line_start": line_start,
+                "line_end": line_end,
+                "chunk_text": chunk_text,
+                "chunk_index": chunk_index,
+            },
+        )
+        self._client.upsert(collection_name=self._collection, points=[point])
+
     def upsert_image(
         self,
         *,

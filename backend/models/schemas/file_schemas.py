@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict
 class FileType(str, Enum):
     document = "document"
     image = "image"
+    code = "code"
 
 
 class FileMetadata(BaseModel):
@@ -22,6 +23,7 @@ class FileMetadata(BaseModel):
     chunk_count: int | None = None
     image_width: int | None = None
     image_height: int | None = None
+    language: str | None = None
 
 
 class OpenFileRequest(BaseModel):
@@ -32,5 +34,6 @@ class IndexStats(BaseModel):
     total_files: int
     total_documents: int
     total_images: int
+    total_code: int
     total_chunks: int
     total_size_bytes: int

@@ -26,6 +26,32 @@ class ImageResult(BaseModel):
     exists: bool = True
 
 
+class CodeResult(BaseModel):
+    """A source-code hit.
+
+    Carries line numbers rather than a page number, and the symbol the chunk
+    defines, so the UI can show "rag_service.py · lines 106-135 · def
+    _retrieve_images" instead of an anonymous slice of a file.
+    """
+
+    result_type: FileType = FileType.code
+    file_id: str
+    file_name: str
+    path: str
+    similarity: float
+    language: str
+    symbol: str | None
+    line_start: int
+    line_end: int
+    chunk_text: str
+    chunk_index: int
+    exists: bool = True
+
+
 class SearchResponse(BaseModel):
     query: str
-    results: list[DocumentResult | ImageResult]
+    results: list[DocumentResult | ImageResult | CodeResult]
+    # The file type read out of the query itself, e.g. "mountain image" → image.
+    # Surfaced rather than applied silently: a filter the user cannot see is
+    # indistinguishable from missing results when the guess is wrong.
+    filtered_to: FileType | None = None

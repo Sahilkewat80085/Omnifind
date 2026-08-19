@@ -1,8 +1,12 @@
 # OmniFind — Streamlit demo UI
 
-A real (not mocked) UI for the backend, used only because the actual Tauri +
-React frontend is blocked on installing Node.js + Rust. Talks to the same
-FastAPI backend the real frontend will use — no backend changes needed later.
+> **Superseded.** The real React + TypeScript frontend now lives in
+> `omnifind/frontend/` and covers everything here plus the Ask AI page. Use that
+> instead; this is kept as a fallback that runs without Node.js installed.
+
+A real (not mocked) UI for the backend, built as a stopgap while the React
+frontend was still blocked. Talks to the same FastAPI backend — no backend
+changes were needed to move on.
 
 ## Run
 

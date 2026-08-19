@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.routes_ask import router as ask_router
 from api.routes_files import router as files_router
 from api.routes_index import router as index_router
 from api.routes_search import router as search_router
@@ -24,11 +25,20 @@ app.add_middleware(
 app.include_router(index_router)
 app.include_router(search_router)
 app.include_router(files_router)
+app.include_router(ask_router)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "app": settings.app_name, "env": settings.app_env}
+def health() -> dict[str, object]:
+    # ai_enabled lets the UI hide or explain the Ask page up front, instead of
+    # letting the user type a question and only then discover there's no key.
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "env": settings.app_env,
+        "ai_enabled": bool(settings.gemini_api_key.strip()),
+        "model": settings.gemini_model,
+    }
 
 
 @app.on_event("startup")

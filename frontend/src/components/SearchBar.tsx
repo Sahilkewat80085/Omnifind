@@ -1,0 +1,69 @@
+import { useState } from "react";
+
+interface Props {
+  placeholder: string;
+  buttonLabel: string;
+  examples?: string[];
+  busy?: boolean;
+  onSubmit: (query: string) => void;
+}
+
+export function SearchBar({
+  placeholder,
+  buttonLabel,
+  examples = [],
+  busy = false,
+  onSubmit,
+}: Props) {
+  const [value, setValue] = useState("");
+
+  function submit(query: string) {
+    const trimmed = query.trim();
+    if (trimmed && !busy) onSubmit(trimmed);
+  }
+
+  return (
+    <div>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(value);
+        }}
+      >
+        <input
+          className="input"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button className="btn" type="submit" disabled={busy || !value.trim()}>
+          {busy ? "Working…" : buttonLabel}
+        </button>
+      </form>
+
+      {examples.length > 0 && (
+        <div className="chip-row" style={{ marginTop: 12 }}>
+          <span className="muted" style={{ fontSize: 12.5, alignSelf: "center" }}>
+            Try:
+          </span>
+          {examples.map((example) => (
+            <button
+              key={example}
+              className="chip"
+              type="button"
+              onClick={() => {
+                // Fill the box as well as firing, so the user can see and edit
+                // what was asked instead of a result with no visible query.
+                setValue(example);
+                submit(example);
+              }}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

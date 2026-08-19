@@ -23,6 +23,7 @@ class MetadataService:
         chunk_count: int | None = None,
         image_width: int | None = None,
         image_height: int | None = None,
+        language: str | None = None,
     ) -> FileMetadata:
         record = self.db.scalar(select(FileRecord).where(FileRecord.path == path))
         if record is None:
@@ -45,6 +46,7 @@ class MetadataService:
         record.chunk_count = chunk_count
         record.image_width = image_width
         record.image_height = image_height
+        record.language = language
 
         self.db.commit()
         self.db.refresh(record)
@@ -87,6 +89,12 @@ class MetadataService:
             )
             or 0
         )
+        total_code = (
+            self.db.scalar(
+                select(func.count(FileRecord.id)).where(FileRecord.file_type == FileType.code.value)
+            )
+            or 0
+        )
         total_chunks = self.db.scalar(select(func.coalesce(func.sum(FileRecord.chunk_count), 0))) or 0
         total_size_bytes = self.db.scalar(select(func.coalesce(func.sum(FileRecord.size_bytes), 0))) or 0
 
@@ -94,6 +102,7 @@ class MetadataService:
             total_files=total_files,
             total_documents=total_documents,
             total_images=total_images,
+            total_code=total_code,
             total_chunks=total_chunks,
             total_size_bytes=total_size_bytes,
         )

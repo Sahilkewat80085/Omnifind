@@ -22,7 +22,7 @@ class FileRecord(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_id)
     file_name: Mapped[str] = mapped_column(String, nullable=False)
-    file_type: Mapped[str] = mapped_column(String, nullable=False)  # "document" | "image"
+    file_type: Mapped[str] = mapped_column(String, nullable=False)  # "document" | "image" | "code"
     extension: Mapped[str] = mapped_column(String, nullable=False)
     path: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -31,3 +31,4 @@ class FileRecord(Base):
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    language: Mapped[str | None] = mapped_column(String, nullable=True)
