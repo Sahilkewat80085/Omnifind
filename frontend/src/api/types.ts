@@ -45,6 +45,14 @@ export interface IndexStatus {
   removed_count: number;
 }
 
+export interface WatchedFolder {
+  id: string;
+  path: string;
+  is_active: boolean;
+  added_at: string;
+  last_scanned_at: string | null;
+}
+
 export interface DocumentResult {
   result_type: "document";
   file_id: string;
@@ -66,9 +74,6 @@ export interface ImageResult {
   height: number;
 }
 
-// A source-code hit. Located by line rather than page, and carrying the
-// symbol it defines so a result reads as "rag_service.py · lines 106-135 ·
-// def _retrieve_images" instead of an anonymous slice of a file.
 export interface CodeResult {
   result_type: "code";
   file_id: string;
@@ -83,15 +88,11 @@ export interface CodeResult {
   chunk_index: number;
 }
 
-// Discriminated on result_type, so narrowing on that field gives the
-// component the right shape without any casts.
 export type SearchResult = DocumentResult | ImageResult | CodeResult;
 
 export interface SearchResponse {
   query: string;
   results: SearchResult[];
-  // The file type read out of the query itself — "mountain image" → "image".
-  // null when the query named no type, so everything was searched.
   filtered_to: FileTypeName | null;
 }
 
@@ -103,16 +104,12 @@ export interface Citation {
   page_number: number | null;
   chunk_text: string;
   similarity: number;
-  // Set for code excerpts, which have lines where a document has a page.
   language: string | null;
   symbol: string | null;
   line_start: number | null;
   line_end: number | null;
 }
 
-// Not a Citation: images are matched visually by CLIP and never go into the
-// prompt, so they have no [n] marker for the answer to reference. The UI keeps
-// them in their own section so they don't read as evidence for the answer.
 export interface RelatedImage {
   file_id: string;
   file_name: string;
@@ -128,7 +125,5 @@ export interface AskResponse {
   citations: Citation[];
   related_images: RelatedImage[];
   model: string;
-  // Tracks text context only — related_images can be non-empty while this is
-  // false, when a question matches pictures but no documents.
   used_context: boolean;
 }

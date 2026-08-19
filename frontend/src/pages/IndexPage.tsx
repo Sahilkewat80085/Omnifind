@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, api } from "../api/client";
-import type { IndexStatus } from "../api/types";
+import type { IndexStatus, WatchedFolder } from "../api/types";
 import { Banner } from "../components/Banner";
 
 const POLL_INTERVAL_MS = 1200;
@@ -9,13 +9,19 @@ const POLL_INTERVAL_MS = 1200;
 export function IndexPage() {
   const [path, setPath] = useState("");
   const [status, setStatus] = useState<IndexStatus | null>(null);
+  const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
   const [message, setMessage] = useState<{ kind: "success" | "warning" | "error"; text: string } | null>(
     null,
   );
   const [starting, setStarting] = useState(false);
 
-  // Polled continuously while this page is mounted, so progress keeps updating
-  // even if the job was kicked off from somewhere else.
+  function loadWatchedFolders() {
+    api
+      .listWatchedFolders()
+      .then(setWatchedFolders)
+      .catch(() => {});
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -25,13 +31,17 @@ export function IndexPage() {
         .then((next) => {
           if (!cancelled) setStatus(next);
         })
-        .catch(() => {
-          /* Sidebar already reports backend reachability; stay quiet here. */
-        });
+        .catch(() => {});
     }
 
     poll();
-    const id = setInterval(poll, POLL_INTERVAL_MS);
+    loadWatchedFolders();
+
+    const id = setInterval(() => {
+      poll();
+      loadWatchedFolders();
+    }, POLL_INTERVAL_MS);
+
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -46,7 +56,11 @@ export function IndexPage() {
     setMessage(null);
     try {
       await api.startIndexing(trimmed);
-      setMessage({ kind: "success", text: "Indexing started." });
+      setMessage({
+        kind: "success",
+        text: "Folder indexed and added to live auto-indexing monitoring.",
+      });
+      loadWatchedFolders();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setMessage({ kind: "warning", text: "An indexing job is already running — see progress below." });
@@ -58,6 +72,16 @@ export function IndexPage() {
     }
   }
 
+  async function handleRemoveWatch(folderPath: string) {
+    try {
+      await api.removeWatchFolder(folderPath);
+      loadWatchedFolders();
+      setMessage({ kind: "success", text: `Stopped monitoring: ${folderPath}` });
+    } catch (err) {
+      setMessage({ kind: "error", text: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   const percent =
     status && status.total > 0
       ? Math.round((status.processed / status.total) * 100)
@@ -66,17 +90,15 @@ export function IndexPage() {
   return (
     <>
       <header className="page-header">
-        <h1>Index a folder</h1>
+        <h1>Automatic Folder Monitoring</h1>
         <p className="subtitle">
-          Recursively scans a folder for PDF, DOCX, TXT, PNG, JPG and JPEG, then builds
-          the semantic index. Re-running on the same folder updates it rather than
-          duplicating entries, and drops anything you have since deleted.
+          Add any folder to start indexing. Folders are automatically monitored in real-time — any file added, updated, or removed will automatically index without manual triggering.
         </p>
       </header>
 
       <div className="card">
         <label className="field-label" htmlFor="folder-path">
-          Folder path
+          Folder to watch & auto-index
         </label>
         <div className="row">
           <input
@@ -94,12 +116,11 @@ export function IndexPage() {
             onClick={handleStart}
             disabled={starting || !path.trim() || status?.is_running}
           >
-            {starting ? "Starting…" : "Start indexing"}
+            {starting ? "Starting…" : "Watch & Index"}
           </button>
         </div>
         <p className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>
-          Paste a full path. The backend reads the folder directly, so this works for
-          any drive the machine can see.
+          Paste a full path. The backend auto-indexes files as they are saved or moved into this directory.
         </p>
       </div>
 
@@ -109,11 +130,58 @@ export function IndexPage() {
         </div>
       )}
 
+      <div className="section-label">Active Monitored Folders</div>
+      <div className="card">
+        {watchedFolders.length === 0 ? (
+          <p className="muted">No folders are currently being monitored.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {watchedFolders.map((folder) => (
+              <div
+                key={folder.id}
+                className="row"
+                style={{
+                  justifyContent: "space-between",
+                  padding: "8px 12px",
+                  background: "var(--color-surface-hover)",
+                  borderRadius: 4,
+                }}
+              >
+                <div>
+                  <strong className="mono" style={{ fontSize: 13.5 }}>
+                    📁 {folder.path}
+                  </strong>
+                  <span
+                    style={{
+                      marginLeft: 10,
+                      fontSize: 11,
+                      color: "var(--color-success, #22c55e)",
+                      background: "rgba(34, 197, 94, 0.15)",
+                      padding: "2px 6px",
+                      borderRadius: 3,
+                    }}
+                  >
+                    ● Auto-indexing active
+                  </span>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: 12, padding: "4px 10px" }}
+                  onClick={() => handleRemoveWatch(folder.path)}
+                >
+                  Unwatch
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="section-label">Progress</div>
 
       <div className="card">
         {!status || (status.total === 0 && !status.is_running) ? (
-          <p className="muted">No indexing job has run yet in this session.</p>
+          <p className="muted">No initial scan job is currently running.</p>
         ) : (
           <>
             <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
