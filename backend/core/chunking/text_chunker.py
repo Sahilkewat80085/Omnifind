@@ -1,0 +1,49 @@
+from dataclasses import dataclass
+
+from core.parsers.base import PageText
+from utils.config import get_settings
+
+settings = get_settings()
+
+
+@dataclass(frozen=True)
+class TextChunk:
+    chunk_index: int
+    chunk_text: str
+    page_number: int | None
+
+
+def chunk_pages(
+    pages: list[PageText],
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[TextChunk]:
+    size = chunk_size or settings.chunk_size
+    overlap = chunk_overlap or settings.chunk_overlap
+    if overlap >= size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+    chunks: list[TextChunk] = []
+    index = 0
+    for page in pages:
+        words = page.text.split()
+        if not words:
+            continue
+
+        start = 0
+        while start < len(words):
+            end = min(start + size, len(words))
+            chunk_words = words[start:end]
+            chunks.append(
+                TextChunk(
+                    chunk_index=index,
+                    chunk_text=" ".join(chunk_words),
+                    page_number=page.page_number,
+                )
+            )
+            index += 1
+            if end == len(words):
+                break
+            start = end - overlap
+
+    return chunks

@@ -1,0 +1,54 @@
+import docx
+import fitz
+import pytest
+
+from core.parsers.document_parser import parse_document
+
+
+def test_parse_pdf_extracts_per_page_text(tmp_path):
+    path = tmp_path / "doc.pdf"
+    pdf_doc = fitz.open()
+    pdf_doc.new_page().insert_text((72, 72), "First page content.")
+    pdf_doc.new_page().insert_text((72, 72), "Second page content.")
+    pdf_doc.save(str(path))
+    pdf_doc.close()
+
+    pages = parse_document(str(path), ".pdf")
+
+    assert [p.page_number for p in pages] == [1, 2]
+    assert "First page" in pages[0].text
+    assert "Second page" in pages[1].text
+
+
+def test_parse_docx_joins_paragraphs_with_no_page_number(tmp_path):
+    path = tmp_path / "doc.docx"
+    d = docx.Document()
+    d.add_paragraph("Paragraph one.")
+    d.add_paragraph("Paragraph two.")
+    d.save(str(path))
+
+    pages = parse_document(str(path), ".docx")
+
+    assert len(pages) == 1
+    assert pages[0].page_number is None
+    assert "Paragraph one." in pages[0].text
+    assert "Paragraph two." in pages[0].text
+
+
+def test_parse_txt_reads_plain_text(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("plain text content", encoding="utf-8")
+
+    pages = parse_document(str(path), ".txt")
+
+    assert len(pages) == 1
+    assert pages[0].page_number is None
+    assert pages[0].text == "plain text content"
+
+
+def test_parse_document_rejects_unsupported_extension(tmp_path):
+    path = tmp_path / "doc.csv"
+    path.write_text("a,b,c")
+
+    with pytest.raises(ValueError):
+        parse_document(str(path), ".csv")

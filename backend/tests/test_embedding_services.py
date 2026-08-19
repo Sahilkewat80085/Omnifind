@@ -1,0 +1,35 @@
+from PIL import Image
+
+from core.embeddings.image_embedding_service import ImageEmbeddingService
+from core.embeddings.text_embedding_service import TextEmbeddingService
+
+
+def _cosine(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def test_text_embedding_ranks_relevant_doc_higher():
+    svc = TextEmbeddingService()
+    doc_vectors = svc.encode_documents(
+        ["Database normalization removes redundancy.", "The cat sat on the mat."]
+    )
+    query_vector = svc.encode_query("normalization in databases")
+
+    assert len(doc_vectors[0]) == 384
+    assert len(query_vector) == 384
+    assert _cosine(query_vector, doc_vectors[0]) > _cosine(query_vector, doc_vectors[1])
+
+
+def test_image_embedding_aligns_image_with_matching_text(tmp_path):
+    red_path = tmp_path / "red.png"
+    blue_path = tmp_path / "blue.png"
+    Image.new("RGB", (100, 100), color=(255, 0, 0)).save(red_path)
+    Image.new("RGB", (100, 100), color=(0, 0, 255)).save(blue_path)
+
+    svc = ImageEmbeddingService()
+    red_vec = svc.encode_image(str(red_path))
+    text_red = svc.encode_text("a solid red image")
+    text_blue = svc.encode_text("a solid blue image")
+
+    assert len(red_vec) == 512
+    assert _cosine(red_vec, text_red) > _cosine(red_vec, text_blue)

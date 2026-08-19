@@ -1,0 +1,13 @@
+import fitz  # PyMuPDF
+
+from core.parsers.base import PageText
+
+
+def parse_pdf(path: str) -> list[PageText]:
+    pages: list[PageText] = []
+    with fitz.open(path) as doc:
+        for page_index in range(doc.page_count):
+            text = doc[page_index].get_text().strip()
+            if text:
+                pages.append(PageText(page_number=page_index + 1, text=text))
+    return pages

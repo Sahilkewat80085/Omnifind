@@ -1,0 +1,11 @@
+from fastapi import APIRouter, Query
+
+from models.schemas.search_schemas import SearchResponse
+from services.search_service import SearchService
+
+router = APIRouter(prefix="/search", tags=["search"])
+
+
+@router.get("", response_model=SearchResponse)
+def search(q: str = Query(..., min_length=1)) -> SearchResponse:
+    return SearchService().search(q)

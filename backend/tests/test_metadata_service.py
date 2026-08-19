@@ -1,0 +1,85 @@
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from database.models import Base
+from models.schemas.file_schemas import FileType
+from services.metadata_service import MetadataService
+
+
+@pytest.fixture
+def db_session(tmp_path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}")
+    Base.metadata.create_all(bind=engine)
+    session_local = sessionmaker(bind=engine)
+    session = session_local()
+    yield session
+    session.close()
+
+
+def test_upsert_creates_then_updates_same_row(db_session):
+    svc = MetadataService(db_session)
+
+    created = svc.upsert_file(
+        file_name="notes.txt",
+        file_type=FileType.document,
+        extension=".txt",
+        path="C:/fake/notes.txt",
+        size_bytes=100,
+        chunk_count=2,
+    )
+
+    updated = svc.upsert_file(
+        file_name="notes.txt",
+        file_type=FileType.document,
+        extension=".txt",
+        path="C:/fake/notes.txt",
+        size_bytes=200,
+        chunk_count=5,
+    )
+
+    assert updated.id == created.id  # same row, not a duplicate
+    assert updated.size_bytes == 200
+    assert updated.chunk_count == 5
+    assert len(svc.list_files()) == 1
+
+
+def test_get_by_path_and_delete(db_session):
+    svc = MetadataService(db_session)
+    svc.upsert_file(
+        file_name="pic.png",
+        file_type=FileType.image,
+        extension=".png",
+        path="C:/fake/pic.png",
+        size_bytes=50,
+        image_width=640,
+        image_height=480,
+    )
+
+    found = svc.get_by_path("C:/fake/pic.png")
+    assert found is not None
+    assert found.image_width == 640
+
+    assert svc.delete_by_path("C:/fake/pic.png") is True
+    assert svc.get_by_path("C:/fake/pic.png") is None
+    assert svc.delete_by_path("C:/fake/pic.png") is False
+
+
+def test_get_stats_aggregates_correctly(db_session):
+    svc = MetadataService(db_session)
+    svc.upsert_file(
+        file_name="a.txt", file_type=FileType.document, extension=".txt",
+        path="a.txt", size_bytes=10, chunk_count=3,
+    )
+    svc.upsert_file(
+        file_name="b.png", file_type=FileType.image, extension=".png",
+        path="b.png", size_bytes=20, image_width=10, image_height=10,
+    )
+
+    stats = svc.get_stats()
+
+    assert stats.total_files == 2
+    assert stats.total_documents == 1
+    assert stats.total_images == 1
+    assert stats.total_chunks == 3
+    assert stats.total_size_bytes == 30

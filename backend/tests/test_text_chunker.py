@@ -1,0 +1,32 @@
+import pytest
+
+from core.chunking.text_chunker import chunk_pages
+from core.parsers.base import PageText
+
+
+def test_chunks_have_correct_overlap_and_page_numbers():
+    text = " ".join(f"word{i}" for i in range(1, 26))  # 25 words
+    pages = [
+        PageText(page_number=1, text=text),
+        PageText(page_number=2, text="short page text"),
+    ]
+
+    chunks = chunk_pages(pages, chunk_size=10, chunk_overlap=3)
+
+    assert [c.page_number for c in chunks] == [1, 1, 1, 1, 2]
+    assert chunks[0].chunk_text == "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"
+    # chunk 1 overlaps chunk 0's last 3 words
+    assert chunks[1].chunk_text.split()[:3] == ["word8", "word9", "word10"]
+    assert chunks[-1].chunk_text == "short page text"
+    assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+
+
+def test_chunk_overlap_must_be_smaller_than_size():
+    pages = [PageText(page_number=1, text="a b c d e")]
+    with pytest.raises(ValueError):
+        chunk_pages(pages, chunk_size=5, chunk_overlap=5)
+
+
+def test_blank_pages_are_skipped():
+    pages = [PageText(page_number=1, text="   ")]
+    assert chunk_pages(pages, chunk_size=10, chunk_overlap=2) == []

@@ -1,0 +1,30 @@
+import pytest
+from PIL import Image
+
+from core.parsers.image_reader import extract_text, read_image_info
+
+
+def test_read_image_info_returns_correct_dimensions(tmp_path):
+    path = tmp_path / "pic.png"
+    Image.new("RGB", (640, 480)).save(path)
+
+    info = read_image_info(str(path))
+
+    assert info.width == 640
+    assert info.height == 480
+    assert info.format == "PNG"
+
+
+def test_read_image_info_rejects_corrupt_file(tmp_path):
+    path = tmp_path / "corrupt.png"
+    path.write_bytes(b"not an image")
+
+    with pytest.raises(ValueError):
+        read_image_info(str(path))
+
+
+def test_extract_text_is_unimplemented_stub(tmp_path):
+    path = tmp_path / "pic.png"
+    Image.new("RGB", (10, 10)).save(path)
+
+    assert extract_text(str(path)) is None
