@@ -17,6 +17,7 @@ class IndexJobState:
     current_file: str | None = None
     last_error: str | None = None
     indexed_count: int = 0
+    removed_count: int = 0
 
 
 class IndexJobManager:
@@ -49,10 +50,11 @@ class IndexJobManager:
                     self._state.total = progress.total
                     self._state.current_file = progress.current_file
 
-            indexed_count = indexing_service.index_folder(path, on_progress=on_progress)
+            summary = indexing_service.index_folder(path, on_progress=on_progress)
 
             with self._lock:
-                self._state.indexed_count = indexed_count
+                self._state.indexed_count = summary.indexed
+                self._state.removed_count = summary.removed
         except Exception as exc:
             logger.exception("Indexing job failed")
             with self._lock:

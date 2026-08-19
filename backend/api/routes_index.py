@@ -35,6 +35,8 @@ def get_status(job_manager: IndexJobManager = Depends(get_job_manager)) -> Index
         total=state.total,
         current_file=state.current_file,
         last_error=state.last_error,
+        indexed_count=state.indexed_count,
+        removed_count=state.removed_count,
     )
 
 

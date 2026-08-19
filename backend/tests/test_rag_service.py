@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from core.embeddings.text_embedding_service import TextEmbeddingService
@@ -54,13 +56,35 @@ class ExplodingImageEmbedder:
         raise RuntimeError("open_clip is not installed")
 
 
+_fake_root: Path
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _fake_file_root(tmp_path_factory):
+    """Give the fabricated hits paths that really exist on disk.
+
+    Retrieval drops any hit whose file is gone, so that a file deleted after
+    indexing can never be cited. Hits pointing at an invented path would be
+    filtered out before any of these assertions ran.
+    """
+    global _fake_root
+    _fake_root = tmp_path_factory.mktemp("indexed_files")
+    yield
+
+
+def _fake_path(name: str) -> str:
+    path = _fake_root / name
+    path.touch()
+    return str(path)
+
+
 def _hit(score: float, name: str = "fees.pdf", text: str = "Total fee paid: 15,000.") -> SearchHit:
     return SearchHit(
         score=score,
         payload={
             "file_id": "f1",
             "file_name": name,
-            "path": f"C:/fake/{name}",
+            "path": _fake_path(name),
             "page_number": 2,
             "chunk_text": text,
             "chunk_index": 0,
@@ -76,7 +100,7 @@ def _image_hit(score: float, name: str = "beach.jpg") -> SearchHit:
         payload={
             "file_id": "i1",
             "file_name": name,
-            "path": f"C:/fake/{name}",
+            "path": _fake_path(name),
             "file_type": "image",
             "image_dimensions": {"width": 800, "height": 600},
         },
@@ -180,7 +204,7 @@ def test_ask_end_to_end_over_real_embeddings_and_vector_store(isolated_env):
         vector_service.upsert_text_chunk(
             file_id=name,
             file_name=name,
-            path=f"C:/fake/{name}",
+            path=_fake_path(name),
             page_number=1,
             chunk_text=text,
             chunk_index=0,
@@ -202,6 +226,44 @@ def test_ask_end_to_end_over_real_embeddings_and_vector_store(isolated_env):
     # with the passage it must find.
     assert response.citations[0].file_name == "dbms_notes.pdf"
     assert "redundant data" in llm.calls[0]["prompt"]
+
+
+def test_a_deleted_file_is_never_cited(isolated_env):
+    """A file deleted after indexing must not answer a question.
+
+    Its vectors survive until the folder is re-scanned, so without the disk
+    check the model would be handed an excerpt from a file that is gone and
+    would cite it — a source the user cannot open.
+    """
+    live = _hit(0.9, name="fees.pdf", text="Total fee paid: 15,000.")
+    deleted = _hit(0.95, name="old_fees.pdf", text="Total fee paid: 99,999.")
+    Path(deleted.payload["path"]).unlink()
+
+    llm = FakeLLM()
+    response = RagService(
+        llm=llm,
+        vector_service=FakeVectorService([deleted, live]),
+        text_embedder=FakeEmbedder(),
+        image_embedder=FakeImageEmbedder(),
+    ).ask("what was the fee?")
+
+    assert [c.file_name for c in response.citations] == ["fees.pdf"]
+    assert "99,999" not in llm.calls[0]["prompt"]
+
+
+def test_a_deleted_image_is_not_offered_alongside_an_answer(isolated_env):
+    kept = _image_hit(0.30, "invoice_scan.jpg")
+    deleted = _image_hit(0.31, "old_scan.jpg")
+    Path(deleted.payload["path"]).unlink()
+
+    response = RagService(
+        llm=FakeLLM(),
+        vector_service=FakeVectorService([_hit(0.9)], image_hits=[deleted, kept]),
+        text_embedder=FakeEmbedder(),
+        image_embedder=FakeImageEmbedder(),
+    ).ask("what was the fee?")
+
+    assert [i.file_name for i in response.related_images] == ["invoice_scan.jpg"]
 
 
 def test_gemini_service_without_api_key_reports_not_configured(monkeypatch):

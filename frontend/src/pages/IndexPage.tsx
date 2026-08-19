@@ -70,7 +70,7 @@ export function IndexPage() {
         <p className="subtitle">
           Recursively scans a folder for PDF, DOCX, TXT, PNG, JPG and JPEG, then builds
           the semantic index. Re-running on the same folder updates it rather than
-          duplicating entries.
+          duplicating entries, and drops anything you have since deleted.
         </p>
       </header>
 
@@ -128,6 +128,13 @@ export function IndexPage() {
             {status.current_file && status.is_running && (
               <p className="mono" style={{ marginTop: 10 }}>
                 {status.current_file}
+              </p>
+            )}
+            {!status.is_running && status.removed_count > 0 && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                Removed {status.removed_count}{" "}
+                {status.removed_count === 1 ? "entry" : "entries"} for files that are no
+                longer on disk.
               </p>
             )}
           </>

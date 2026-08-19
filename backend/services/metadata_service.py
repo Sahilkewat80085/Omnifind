@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -67,6 +69,14 @@ class MetadataService:
         records = self.db.scalars(stmt).all()
         return [FileMetadata.model_validate(r) for r in records]
 
+    def list_paths(self) -> list[str]:
+        """Every indexed path, without building a schema object per row.
+
+        Used by the re-index prune, which only needs to know which paths are
+        on record so it can check them against the disk.
+        """
+        return list(self.db.scalars(select(FileRecord.path)).all())
+
     def delete_by_path(self, path: str) -> bool:
         record = self.db.scalar(select(FileRecord).where(FileRecord.path == path))
         if record is None:
@@ -74,6 +84,21 @@ class MetadataService:
         self.db.delete(record)
         self.db.commit()
         return True
+
+    def delete_paths(self, paths: Sequence[str]) -> int:
+        """Delete many records in one transaction, returning how many went.
+
+        A folder scan can find hundreds of files gone at once (a cleared
+        downloads folder, a moved project); committing per row would make the
+        prune slower than the indexing it follows.
+        """
+        if not paths:
+            return 0
+        records = self.db.scalars(select(FileRecord).where(FileRecord.path.in_(paths))).all()
+        for record in records:
+            self.db.delete(record)
+        self.db.commit()
+        return len(records)
 
     def get_stats(self) -> IndexStats:
         total_files = self.db.scalar(select(func.count(FileRecord.id))) or 0

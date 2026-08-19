@@ -40,6 +40,9 @@ export interface IndexStatus {
   total: number;
   current_file: string | null;
   last_error: string | null;
+  indexed_count: number;
+  /** Entries cleared because the file is no longer on disk. */
+  removed_count: number;
 }
 
 export interface DocumentResult {

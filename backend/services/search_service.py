@@ -9,6 +9,23 @@ from models.schemas.search_schemas import CodeResult, DocumentResult, ImageResul
 from utils.config import get_settings
 
 
+def drop_missing_files(hits: list[SearchHit]) -> list[SearchHit]:
+    """Discard hits whose file is no longer on disk.
+
+    The index is only reconciled with the disk when a folder is re-scanned,
+    so between a deletion and the next scan its vectors are still there and
+    still match. Returning one is the worst kind of wrong answer: it looks
+    like a real result until "Open" fails with file not found. Checking here
+    means a deleted file disappears from search the moment it is deleted,
+    and the scan-time prune is what stops it being checked forever.
+
+    One stat() per hit, on at most a few dozen paths — far cheaper than the
+    embedding work that produced them. Files on a disconnected network or
+    removable drive read as missing and drop out until it is back.
+    """
+    return [hit for hit in hits if Path(hit.payload.get("path", "")).is_file()]
+
+
 def _calibrate(
     hits: list[SearchHit], *, floor: float, ceil: float, drop_below_floor: bool
 ) -> list[SearchHit]:
@@ -60,8 +77,10 @@ class SearchService:
             # Documents and code share the text partition, so one type can
             # crowd the other out of a top-k before either is scored.
             # Over-fetching keeps both represented; results[:k] still trims.
-            raw_text_hits = self._vector_service.search_text(
-                self._text_embedder.encode_query(intent.query), top_k=k * 3
+            raw_text_hits = drop_missing_files(
+                self._vector_service.search_text(
+                    self._text_embedder.encode_query(intent.query), top_k=k * 3
+                )
             )
             is_code = lambda hit: hit.payload.get("file_type") == FileType.code.value  # noqa: E731
 
@@ -95,8 +114,10 @@ class SearchService:
             results += [
                 self._to_image_result(hit)
                 for hit in _calibrate(
-                    self._vector_service.search_image(
-                        self._image_embedder.encode_text(intent.query), top_k=k
+                    drop_missing_files(
+                        self._vector_service.search_image(
+                            self._image_embedder.encode_text(intent.query), top_k=k
+                        )
                     ),
                     floor=self._settings.search_image_score_floor,
                     ceil=self._settings.search_image_score_ceil,
@@ -120,7 +141,6 @@ class SearchService:
             page_number=p.get("page_number"),
             chunk_text=p["chunk_text"],
             chunk_index=p["chunk_index"],
-            exists=Path(p["path"]).is_file(),
         )
 
     @staticmethod
@@ -137,7 +157,6 @@ class SearchService:
             line_end=p.get("line_end", 1),
             chunk_text=p["chunk_text"],
             chunk_index=p["chunk_index"],
-            exists=Path(p["path"]).is_file(),
         )
 
     @staticmethod
@@ -151,5 +170,4 @@ class SearchService:
             similarity=hit.score,
             width=dims.get("width", 0),
             height=dims.get("height", 0),
-            exists=Path(p["path"]).is_file(),
         )

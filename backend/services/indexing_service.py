@@ -1,3 +1,4 @@
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,12 @@ class IndexProgress:
     current_file: str
 
 
+@dataclass(frozen=True)
+class IndexSummary:
+    indexed: int
+    removed: int
+
+
 ProgressCallback = Callable[[IndexProgress], None]
 
 
@@ -36,7 +43,8 @@ class IndexingService:
         self._image_embedder = ImageEmbeddingService()
         self._vector_service.ensure_collection()
 
-    def index_folder(self, root: str, on_progress: ProgressCallback | None = None) -> int:
+    def index_folder(self, root: str, on_progress: ProgressCallback | None = None) -> IndexSummary:
+        root_path = Path(root).resolve()
         files = list(FolderScanner().scan(root))
         total = len(files)
         indexed_count = 0
@@ -51,7 +59,40 @@ class IndexingService:
             if on_progress:
                 on_progress(IndexProgress(processed=i, total=total, current_file=scanned.path))
 
-        return indexed_count
+        removed_count = self._remove_deleted_files(root_path, {f.path for f in files})
+        return IndexSummary(indexed=indexed_count, removed=removed_count)
+
+    def _remove_deleted_files(self, root: Path, seen_paths: set[str]) -> int:
+        """Drop index entries for files that have since been deleted from disk.
+
+        A scan only ever adds what it finds, so without this step a file the
+        user deleted keeps its row in SQLite and its vectors in Qdrant
+        forever: it still ranks in search, and "Open" then fails with a file
+        not found. Re-scanning a folder has to mean "make the index match the
+        folder", not "add whatever is there now".
+
+        Two guards keep this from deleting more than it should. Only records
+        *under the folder being scanned* are candidates, so indexing folder A
+        never prunes what was indexed from folder B. And a candidate is only
+        removed once `exists()` confirms it is really gone — a file the
+        scanner merely skipped this run (an unreadable directory, a source
+        file that grew past `code_max_file_bytes`, a newly ignored directory)
+        is still on disk and keeps its entry.
+        """
+        seen = {os.path.normcase(path) for path in seen_paths}
+        stale = [
+            path
+            for path in self._metadata_service.list_paths()
+            if os.path.normcase(path) not in seen
+            and Path(path).is_relative_to(root)
+            and not Path(path).exists()
+        ]
+
+        for path in stale:
+            logger.info("Removing deleted file from index: %s", path)
+            self._vector_service.delete_by_path(path)
+
+        return self._metadata_service.delete_paths(stale)
 
     def _index_file(self, scanned: ScannedFile, root: str) -> None:
         # Clear any vectors from a previous indexing run of this same path

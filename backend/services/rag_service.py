@@ -4,7 +4,7 @@ from core.llm.base import LLMProvider
 from core.llm.gemini_service import GeminiService
 from core.vectorstore.qdrant_client import SearchHit, VectorService
 from models.schemas.rag_schemas import AskResponse, Citation, RelatedImage
-from services.search_service import _calibrate
+from services.search_service import _calibrate, drop_missing_files
 from utils.config import get_settings
 from utils.logger import get_logger
 
@@ -102,7 +102,7 @@ class RagService:
         # Over-fetch because documents and code share this partition: without
         # it, noise-level code chunks can fill the top-k and starve the
         # documents that actually answer the question.
-        hits = self._vector_service.search_text(query_vector, top_k=k * 3)
+        hits = drop_missing_files(self._vector_service.search_text(query_vector, top_k=k * 3))
         return [h for h in hits if h.score >= self._floor_for(h)][:k]
 
     def _floor_for(self, hit: SearchHit) -> float:
@@ -130,8 +130,10 @@ class RagService:
         """
         try:
             query_vector = self._image_embedder.encode_text(query)
-            hits = self._vector_service.search_image(
-                query_vector, top_k=self._settings.rag_image_top_k
+            hits = drop_missing_files(
+                self._vector_service.search_image(
+                    query_vector, top_k=self._settings.rag_image_top_k
+                )
             )
         except Exception:
             # Image retrieval is a garnish on the answer. If OpenCLIP is

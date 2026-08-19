@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -12,13 +12,6 @@ from models.schemas.file_schemas import FileMetadata, FileType, OpenFileRequest
 from services.metadata_service import MetadataService
 
 router = APIRouter(prefix="/files", tags=["files"])
-
-
-@router.get("/exists")
-def check_file_exists(path: str = Query(...)) -> dict[str, bool | str]:
-    file_path = Path(path)
-    exists = file_path.is_file()
-    return {"path": path, "exists": exists, "message": "File exists" if exists else "File not found"}
 
 
 @router.get("", response_model=list[FileMetadata])

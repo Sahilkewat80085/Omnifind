@@ -33,8 +33,9 @@ def test_index_folder_then_search_returns_expected_top_results(isolated_env, tmp
     db = sessionmaker(bind=engine)()
 
     indexing_service = IndexingService(MetadataService(db))
-    indexed_count = indexing_service.index_folder(str(source_folder))
-    assert indexed_count == 3
+    summary = indexing_service.index_folder(str(source_folder))
+    assert summary.indexed == 3
+    assert summary.removed == 0
 
     doc_response = SearchService().search("database normalization")
     assert doc_response.results[0].file_name == "dbms_notes.pdf"
