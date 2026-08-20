@@ -10,12 +10,6 @@ import { LoadingIndicator } from "../components/LoadingIndicator";
 import { SearchBar } from "../components/SearchBar";
 import { presentableResults } from "../utils/relevance";
 
-const EXAMPLES = [
-  "how much money was paid",
-  "travel destinations brochure",
-  "picture of a dog",
-];
-
 // Naming a file type in the query filters to it — "mountain image" searches
 // pictures only. Plural, because they label a set of results.
 const TYPE_LABELS: Record<string, string> = {
@@ -56,7 +50,6 @@ export function SearchPage() {
       <SearchBar
         placeholder="e.g. how much did I pay in fees?"
         buttonLabel="Search"
-        examples={EXAMPLES}
         busy={busy}
         onSubmit={handleSearch}
       />

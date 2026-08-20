@@ -10,12 +10,6 @@ import { RelatedImageCard } from "../components/RelatedImageCard";
 import { SearchBar } from "../components/SearchBar";
 import { isRelevant } from "../utils/relevance";
 
-const EXAMPLES = [
-  "how much was the total fee?",
-  "summarise the travel brochure",
-  "what was billed on the invoice?",
-];
-
 interface Props {
   health: Health | null;
 }
@@ -66,7 +60,6 @@ export function AskPage({ health }: Props) {
       <SearchBar
         placeholder="e.g. what did I write about database normalization?"
         buttonLabel="Ask"
-        examples={EXAMPLES}
         busy={busy}
         onSubmit={handleAsk}
       />
@@ -83,41 +76,38 @@ export function AskPage({ health }: Props) {
         const relatedImages = response.related_images.filter((i) => isRelevant(i.similarity));
 
         return (
-        <>
-          <div className="section-label">Answer</div>
-          <AnswerCard response={response} />
+          <>
+            <div className="section-label">Answer</div>
+            <AnswerCard response={response} />
 
-          {response.citations.length > 0 && (
-            <>
-              <div className="section-label">
-                Sources ({response.citations.length})
-              </div>
-              {response.citations.map((citation) => (
-                <ReferenceCard key={citation.marker} citation={citation} />
-              ))}
-            </>
-          )}
-
-          {relatedImages.length > 0 && (
-            <>
-              <div className="section-label">
-                Matching images ({relatedImages.length})
-              </div>
-              {/* Labelled separately from Sources on purpose: these did not
-                  inform the answer, so presenting them as citations would
-                  overstate what the model actually read. */}
-              <p className="section-note">
-                Found by visual similarity to your question. The AI cannot read
-                inside images, so these did not contribute to the answer above.
-              </p>
-              <div className="image-grid">
-                {relatedImages.map((image) => (
-                  <RelatedImageCard key={image.file_id} image={image} />
+            {response.citations.length > 0 && (
+              <>
+                <div className="section-label" style={{ marginTop: 28 }}>
+                  Sources ({response.citations.length})
+                </div>
+                {response.citations.map((c) => (
+                  <ReferenceCard key={c.marker} citation={c} />
                 ))}
-              </div>
-            </>
-          )}
-        </>
+              </>
+            )}
+
+            {relatedImages.length > 0 && (
+              <>
+                <div className="section-label" style={{ marginTop: 28 }}>
+                  Related pictures ({relatedImages.length})
+                </div>
+                <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+                  Found by visual similarity to your question. The AI cannot read what
+                  is in them, only find pictures that look like what was described.
+                </p>
+                <div className="image-grid">
+                  {relatedImages.map((img) => (
+                    <RelatedImageCard key={img.file_id} image={img} />
+                  ))}
+                </div>
+              </>
+            )}
+          </>
         );
       })()}
     </>
