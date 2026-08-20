@@ -42,9 +42,19 @@ class VectorService:
         self._client = _get_client()
         self._collection = get_settings().qdrant_collection_name
 
+    def collection_exists(self) -> bool:
+        """False until the first folder is indexed.
+
+        The collection is created by indexing, not at startup, so on a fresh
+        install it genuinely does not exist yet - and Qdrant raises rather
+        than returning nothing when you search a collection that is not there.
+        """
+        return self._collection in {
+            c.name for c in self._client.get_collections().collections
+        }
+
     def ensure_collection(self) -> None:
-        existing = {c.name for c in self._client.get_collections().collections}
-        if self._collection in existing:
+        if self.collection_exists():
             return
 
         logger.info("Creating Qdrant collection: %s", self._collection)
@@ -149,6 +159,13 @@ class VectorService:
         top_k: int,
         file_type: str | None = None,
     ) -> list[SearchHit]:
+        # Nothing indexed yet means no hits, not an error. Without this the
+        # first thing a new user does - install, open the app, type a query -
+        # is answered with a 500, because searching a collection that does not
+        # exist raises inside qdrant-client.
+        if not self.collection_exists():
+            return []
+
         query_filter = None
         if file_type is not None:
             query_filter = qmodels.Filter(
@@ -167,6 +184,9 @@ class VectorService:
         return [SearchHit(score=r.score, payload=r.payload or {}) for r in results]
 
     def search_image(self, query_vector: list[float], top_k: int) -> list[SearchHit]:
+        if not self.collection_exists():
+            return []
+
         results = self._client.search(
             collection_name=self._collection,
             query_vector=(IMAGE_VECTOR_NAME, query_vector),
