@@ -15,7 +15,33 @@ python -m venv .venv
 pip install -r requirements.txt # or requirements-dev.txt to include pytest
 
 copy .env.example .env          # adjust if needed, defaults work out of the box
+
+python scripts/fetch_models.py  # one-time, needs internet (~740 MB)
 ```
+
+### The one-time model download
+
+`scripts/fetch_models.py` is the **only** part of OmniFind that needs an
+internet connection. It pulls the two embedding models into the local
+HuggingFace cache:
+
+| Model | Purpose | Size |
+|---|---|---|
+| `BAAI/bge-small-en-v1.5` | text + code embeddings | 135 MB |
+| `CLIP-ViT-B-32-laion2B-s34B-b79K` | image embeddings | 605 MB |
+
+After that the app runs **fully offline**. It does not merely happen to work
+without a connection — `utils/offline.py` sets `HF_HUB_OFFLINE=1` before any
+model library is imported, so the HuggingFace libraries load from the local
+cache and never attempt a request. (The variable is read into a module
+constant at import time, which is why `main.py` enforces it above its own
+imports; setting it later is silently a no-op.)
+
+The script is safe to re-run and doubles as an install check. If it was never
+run, the backend still boots, but `/health` reports
+`models_state: "unavailable"`, the UI shows a banner naming the fix, and search
+returns `503` with the same message instead of a stack trace about an
+unreachable host.
 
 ### Enabling AI answers
 

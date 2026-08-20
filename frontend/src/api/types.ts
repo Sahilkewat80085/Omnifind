@@ -1,12 +1,22 @@
 // Mirrors backend/models/schemas/*.py. Keep the two in sync — these are the
 // contract between the FastAPI backend and this UI.
 
+/** "pending" only during the few seconds of start-up warm-up. */
+export type ModelState = "pending" | "ready" | "unavailable";
+
 export interface Health {
   status: string;
   app: string;
   env: string;
   ai_enabled: boolean;
   model: string;
+  /**
+   * Whether the embedding models are loaded. OmniFind runs offline, but the
+   * weights are downloaded once at setup — "unavailable" means that step never
+   * happened, and neither search nor indexing can work until it does.
+   */
+  models_state: ModelState;
+  models_detail: string;
 }
 
 export type FileTypeName = "document" | "image" | "code";

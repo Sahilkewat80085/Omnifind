@@ -1,15 +1,29 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+# This block runs before every other import on purpose — do not let an
+# import sorter move it. huggingface_hub reads HF_HUB_OFFLINE into a constant
+# at import time, so enforcing offline mode after sentence_transformers or
+# open_clip has been imported does nothing at all. See utils/offline.py.
+from utils.offline import enforce_offline_models  # isort:skip
 
-from api.routes_ask import router as ask_router
-from api.routes_files import router as files_router
-from api.routes_index import router as index_router
-from api.routes_search import router as search_router
-from database.session import SessionLocal, init_db
-from services.folder_watcher_service import get_watcher_service
-from services.metadata_service import MetadataService
-from utils.config import get_settings
-from utils.logger import get_logger
+enforce_offline_models()
+
+import threading  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from starlette.requests import Request  # noqa: E402
+
+from api.routes_ask import router as ask_router  # noqa: E402
+from api.routes_files import router as files_router  # noqa: E402
+from api.routes_index import router as index_router  # noqa: E402
+from api.routes_search import router as search_router  # noqa: E402
+from core.embeddings import readiness  # noqa: E402
+from core.embeddings.errors import ModelsNotAvailableError  # noqa: E402
+from database.session import SessionLocal, init_db  # noqa: E402
+from services.folder_watcher_service import get_watcher_service  # noqa: E402
+from services.metadata_service import MetadataService  # noqa: E402
+from utils.config import get_settings  # noqa: E402
+from utils.logger import get_logger  # noqa: E402
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -30,14 +44,31 @@ app.include_router(files_router)
 app.include_router(ask_router)
 
 
+@app.exception_handler(ModelsNotAvailableError)
+def _models_missing(request: Request, exc: ModelsNotAvailableError) -> JSONResponse:
+    """503, not 500: setup is incomplete, the server is not broken.
+
+    The message names the fetch script, and the frontend already surfaces
+    `detail` verbatim, so the user is told what to run rather than being shown
+    a stack trace about an unreachable host.
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
+    status = readiness.get_status()
     return {
         "status": "ok",
         "app": settings.app_name,
         "env": settings.app_env,
         "ai_enabled": bool(settings.gemini_api_key.strip()),
         "model": settings.gemini_model,
+        # Whether search can actually run. "pending" during the few seconds of
+        # start-up warm-up, "unavailable" only when the one-time model download
+        # never completed. Everything else here can still say "ok".
+        "models_state": status.state,
+        "models_detail": status.detail,
     }
 
 
@@ -46,6 +77,12 @@ def on_startup() -> None:
     logger.info("%s starting up in '%s' mode", settings.app_name, settings.app_env)
     init_db()
     logger.info("Database initialized")
+
+    # In a thread so a cold model load does not hold the port shut for several
+    # seconds, and daemon so it can never keep a shutdown hanging. It also runs
+    # before the watcher indexes anything, which means the model caches are
+    # populated once here instead of racing to load twice.
+    threading.Thread(target=readiness.warm_up, name="model-warmup", daemon=True).start()
 
     # Resume real-time watching for all registered folders
     db = SessionLocal()
