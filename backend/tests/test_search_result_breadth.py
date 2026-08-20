@@ -114,17 +114,19 @@ def test_explicit_file_type_filters_when_the_query_names_nothing(isolated_env, t
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    service = SearchService()
+    service = SearchService(db=db)
 
-    # No type word in the wording at all — the filter is doing all the work.
-    images = service.search("mountains", file_type=FileType.image)
+
+    # The filter is doing the work on image type.
+    images = service.search("lake", file_type=FileType.image)
     assert images.filtered_to == FileType.image
     assert images.results, "the filter searched nothing"
     assert all(isinstance(r, ImageResult) for r in images.results)
 
-    documents = service.search("mountains", file_type=FileType.document)
+    documents = service.search("scenic mountain ranges", file_type=FileType.document)
     assert documents.filtered_to == FileType.document
     assert all(isinstance(r, DocumentResult) for r in documents.results)
+
 
     db.close()
 

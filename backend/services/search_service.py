@@ -1,7 +1,10 @@
 from pathlib import Path
 from typing import Sequence
 
+from sqlalchemy.orm import Session
+
 from core.embeddings.image_embedding_service import ImageEmbeddingService
+
 from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.query.intent import detect_intent
 from core.vectorstore.qdrant_client import SearchHit, VectorService
@@ -55,11 +58,12 @@ def best_per_file(results: Sequence[SearchResult]) -> list[SearchResult]:
 
 
 class SearchService:
-    def __init__(self) -> None:
+    def __init__(self, db: Session | None = None) -> None:
         self._vector_service = VectorService()
         self._text_embedder = TextEmbeddingService()
         self._image_embedder = ImageEmbeddingService()
         self._settings = get_settings()
+        self._db = db
 
     def search(
         self,
@@ -84,10 +88,12 @@ class SearchService:
         searching_images = (wants == FileType.image)
 
         # 1. Exact & Fuzzy Filename Matches
-        db = SessionLocal()
+        db = self._db or SessionLocal()
+        should_close = (self._db is None)
         try:
             meta_service = MetadataService(db)
             filename_matches = meta_service.search_by_filename(search_query, file_type=wants)
+
             for file_meta, score in filename_matches:
                 if not Path(file_meta.path).is_file():
                     continue
@@ -138,7 +144,9 @@ class SearchService:
                             )
                         )
         finally:
-            db.close()
+            if should_close:
+                db.close()
+
 
         # 2. Semantic Search for Images ONLY when searching for images
         if searching_images:

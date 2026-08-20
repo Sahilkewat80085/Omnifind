@@ -73,8 +73,9 @@ class Settings(BaseSettings):
     # appearing, text hits are clamped to 0 so document recall is unchanged.
     search_text_score_floor: float = 0.40
     search_text_score_ceil: float = 0.80
-    search_image_score_floor: float = 0.18
+    search_image_score_floor: float = 0.235
     search_image_score_ceil: float = 0.35
+
 
 
     # Code needs its own band even though it shares bge with documents.

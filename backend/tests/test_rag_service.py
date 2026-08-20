@@ -324,8 +324,9 @@ def test_related_images_use_the_same_calibration_as_the_search_page():
 
     response = service.ask("beach")
 
-    # (0.30 - 0.18) / (0.35 - 0.18) = 0.7058…
-    assert response.related_images[0].similarity == pytest.approx(0.70588, abs=1e-4)
+    # (0.30 - 0.235) / (0.35 - 0.235) = 0.5652...
+    assert response.related_images[0].similarity == pytest.approx(0.565217, abs=1e-4)
+
 
 
 def test_sub_noise_images_are_dropped_from_an_answer():
