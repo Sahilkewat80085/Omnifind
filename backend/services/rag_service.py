@@ -3,6 +3,7 @@ from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.llm.base import LLMProvider
 from core.llm.gemini_service import GeminiService
 from core.vectorstore.qdrant_client import SearchHit, VectorService
+from models.schemas.file_schemas import FileType
 from models.schemas.rag_schemas import AskResponse, Citation, RelatedImage
 from services.search_service import _calibrate, drop_missing_files
 from utils.config import get_settings
@@ -99,11 +100,19 @@ class RagService:
 
     def _retrieve(self, query: str, k: int) -> list[SearchHit]:
         query_vector = self._text_embedder.encode_query(query)
-        # Over-fetch because documents and code share this partition: without
-        # it, noise-level code chunks can fill the top-k and starve the
-        # documents that actually answer the question.
-        hits = drop_missing_files(self._vector_service.search_text(query_vector, top_k=k * 3))
-        return [h for h in hits if h.score >= self._floor_for(h)][:k]
+        doc_hits = drop_missing_files(
+            self._vector_service.search_text(
+                query_vector, top_k=k, file_type=FileType.document.value
+            )
+        )
+        code_hits = drop_missing_files(
+            self._vector_service.search_text(
+                query_vector, top_k=k, file_type=FileType.code.value
+            )
+        )
+        valid_hits = [h for h in (doc_hits + code_hits) if h.score >= self._floor_for(h)]
+        valid_hits.sort(key=lambda h: h.score, reverse=True)
+        return valid_hits[:k]
 
     def _floor_for(self, hit: SearchHit) -> float:
         """Code and documents need different thresholds on the same scale.

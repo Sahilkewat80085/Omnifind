@@ -1,7 +1,8 @@
+import os
 import uuid
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -20,38 +21,43 @@ IMAGE_VECTOR_SIZE = 512
 @dataclass(frozen=True)
 class SearchHit:
     score: float
-    payload: dict[str, Any]
+    payload: dict[str, object]
 
 
 @lru_cache(maxsize=1)
 def _get_client() -> QdrantClient:
-    # Local/embedded mode locks its storage directory — a second QdrantClient
-    # pointed at the same path (e.g. indexing running while a search comes in)
-    # would fail to open it. One process-wide client avoids that entirely.
     settings = get_settings()
     if settings.qdrant_mode == "local":
-        local_path = BACKEND_ROOT / settings.qdrant_local_path
+        local_path = Path(settings.qdrant_local_path)
+        if not local_path.is_absolute():
+            local_path = (BACKEND_ROOT / local_path).resolve()
         local_path.mkdir(parents=True, exist_ok=True)
         return QdrantClient(path=str(local_path))
-    return QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+    return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
 
 
 class VectorService:
     def __init__(self) -> None:
-        settings = get_settings()
-        self._collection = settings.qdrant_collection_name
         self._client = _get_client()
+        self._collection = get_settings().qdrant_collection_name
 
     def ensure_collection(self) -> None:
-        existing = [c.name for c in self._client.get_collections().collections]
+        existing = {c.name for c in self._client.get_collections().collections}
         if self._collection in existing:
             return
+
         logger.info("Creating Qdrant collection: %s", self._collection)
         self._client.create_collection(
             collection_name=self._collection,
             vectors_config={
-                TEXT_VECTOR_NAME: qmodels.VectorParams(size=TEXT_VECTOR_SIZE, distance=qmodels.Distance.COSINE),
-                IMAGE_VECTOR_NAME: qmodels.VectorParams(size=IMAGE_VECTOR_SIZE, distance=qmodels.Distance.COSINE),
+                TEXT_VECTOR_NAME: qmodels.VectorParams(
+                    size=TEXT_VECTOR_SIZE,
+                    distance=qmodels.Distance.COSINE,
+                ),
+                IMAGE_VECTOR_NAME: qmodels.VectorParams(
+                    size=IMAGE_VECTOR_SIZE,
+                    distance=qmodels.Distance.COSINE,
+                ),
             },
         )
 
@@ -95,16 +101,6 @@ class VectorService:
         chunk_index: int,
         vector: list[float],
     ) -> None:
-        """Store a code chunk in the *text* vector, alongside documents.
-
-        Code shares the text partition rather than getting a third named
-        vector, for two reasons. Adding a vector to a live collection means
-        recreating it, which would throw away every document and image already
-        indexed. And unlike an image, code is text a language model can read —
-        sharing the partition is what lets /ask cite a function without any
-        extra retrieval path. `file_type` in the payload is what separates the
-        two on the way out.
-        """
         point = qmodels.PointStruct(
             id=str(uuid.uuid4()),
             vector={TEXT_VECTOR_NAME: vector},
@@ -146,10 +142,25 @@ class VectorService:
         )
         self._client.upsert(collection_name=self._collection, points=[point])
 
-    def search_text(self, query_vector: list[float], top_k: int) -> list[SearchHit]:
+    def search_text(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        file_type: str | None = None,
+    ) -> list[SearchHit]:
+        query_filter = None
+        if file_type is not None:
+            query_filter = qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="file_type", match=qmodels.MatchValue(value=file_type)
+                    )
+                ]
+            )
         results = self._client.search(
             collection_name=self._collection,
             query_vector=(TEXT_VECTOR_NAME, query_vector),
+            query_filter=query_filter,
             limit=top_k,
         )
         return [SearchHit(score=r.score, payload=r.payload or {}) for r in results]

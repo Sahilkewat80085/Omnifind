@@ -1,8 +1,11 @@
+import difflib
+import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from database.models import FileRecord, WatchedFolder
@@ -11,6 +14,70 @@ from models.schemas.index_schemas import WatchedFolderResponse
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_QUESTION_WORDS = {
+    "how", "what", "why", "when", "where", "who", "which",
+    "can", "could", "is", "are", "do", "does", "did", "was", "were",
+}
+_COMMON_STOPWORDS = {
+    "how", "much", "was", "the", "what", "why", "when", "where", "who", "which",
+    "for", "with", "and", "from", "any", "some", "all", "our", "you", "your",
+    "this", "that", "these", "those", "have", "has", "had", "about",
+}
+
+
+def calculate_filename_match_score(query_str: str, file_name: str) -> float:
+    """Calculates a normalized score (0.0 to 1.0) indicating how well a filename matches a search query."""
+    fn_lower = file_name.lower()
+    q_lower = query_str.strip().lower()
+
+    if not q_lower:
+        return 0.0
+
+    is_question = bool(
+        any(q_lower.startswith(f"{qw} ") for qw in _QUESTION_WORDS) or q_lower.endswith("?")
+    )
+
+    # 1. Exact match of query string anywhere in filename (e.g. "nptel" in "nptel payment.pdf")
+    if not is_question and q_lower in fn_lower:
+        return 1.0
+
+    q_tokens = [
+        t for t in re.findall(r"[a-z0-9]+", q_lower)
+        if len(t) >= 2 and t not in _COMMON_STOPWORDS
+    ]
+
+    if not q_tokens:
+        return 0.0
+
+    if is_question:
+        # For full natural language questions, only match if all non-stop query tokens match the filename
+        if len(q_tokens) >= 2:
+            matched_q_tokens = sum(1 for t in q_tokens if t in fn_lower)
+            if matched_q_tokens == len(q_tokens):
+                return 1.0
+        return 0.0
+
+    fn_tokens = re.findall(r"[a-z0-9]+", fn_lower)
+
+    matched_tokens = 0
+    for q_tok in q_tokens:
+        if q_tok in fn_lower:
+            matched_tokens += 1
+        else:
+            # Fuzzy match token against filename tokens (e.g., 'nptl' matches 'nptel')
+            close = [
+                t
+                for t in fn_tokens
+                if difflib.SequenceMatcher(None, q_tok, t).ratio() >= 0.75
+            ]
+            if close:
+                matched_tokens += 1
+
+    if matched_tokens == len(q_tokens):
+        return 1.0
+
+    return 0.0
 
 
 class MetadataService:
@@ -73,6 +140,24 @@ class MetadataService:
             stmt = stmt.where(FileRecord.file_type == file_type.value)
         records = self.db.scalars(stmt).all()
         return [FileMetadata.model_validate(r) for r in records]
+
+    def search_by_filename(
+        self, query: str, file_type: FileType | None = None
+    ) -> list[tuple[FileMetadata, float]]:
+        """Search metadata records where the file name matches the query words with fuzzy/token scoring."""
+        try:
+            all_files = self.list_files(file_type=file_type)
+        except OperationalError:
+            return []
+
+        scored: list[tuple[FileMetadata, float]] = []
+        for file_meta in all_files:
+            score = calculate_filename_match_score(query, file_meta.file_name)
+            if score >= 0.80:
+                scored.append((file_meta, score))
+
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return scored
 
     def list_paths(self) -> list[str]:
         return list(self.db.scalars(select(FileRecord.path)).all())

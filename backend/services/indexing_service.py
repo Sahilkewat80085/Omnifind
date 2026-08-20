@@ -157,7 +157,19 @@ class IndexingService:
                     vector=vector,
                 )
         else:
-            logger.warning("No extractable text in %s", scanned.path)
+            logger.warning("No extractable text in %s; indexing fallback text vector", scanned.path)
+            # Create a fallback chunk embedding based on file name and path for scanned/graphic PDFs
+            fallback_text = scanned.file_name.replace("_", " ").replace("-", " ")
+            vectors = self._text_embedder.encode_documents([fallback_text])
+            self._vector_service.upsert_text_chunk(
+                file_id=file_id,
+                file_name=scanned.file_name,
+                path=scanned.path,
+                page_number=1,
+                chunk_text=f"Document: {scanned.file_name}",
+                chunk_index=0,
+                vector=vectors[0],
+            )
 
         self._metadata_service.upsert_file(
             file_name=scanned.file_name,
@@ -165,7 +177,7 @@ class IndexingService:
             extension=scanned.extension,
             path=scanned.path,
             size_bytes=scanned.size_bytes,
-            chunk_count=len(chunks),
+            chunk_count=len(chunks) if chunks else 1,
         )
 
     def _index_code(self, scanned: ScannedFile, file_id: str, root: str) -> None:

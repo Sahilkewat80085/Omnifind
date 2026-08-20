@@ -7,20 +7,9 @@ interface Props {
   image: RelatedImage;
 }
 
-/**
- * A picture the question matched visually. Deliberately not a ReferenceCard:
- * no [n] marker, because nothing in the answer cites it — the model never saw
- * this image, CLIP just found it similar to the question.
- *
- * The thumbnail streams from the backend rather than the file:// path in
- * `image.path`, which a page served over http cannot load. Same reason the
- * Search results use api.fileContentUrl.
- */
 export function RelatedImageCard({ image }: Props) {
   const [failed, setFailed] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
-
-  const percent = Math.round(Math.max(0, Math.min(1, image.similarity)) * 100);
 
   async function handleOpen() {
     setOpenError(null);
@@ -34,8 +23,6 @@ export function RelatedImageCard({ image }: Props) {
   return (
     <div className="image-card">
       {failed ? (
-        // The file was indexed but has since moved or been deleted; say so
-        // rather than leaving a broken-image icon.
         <div className="image-card-missing">File unavailable</div>
       ) : (
         <img
@@ -52,7 +39,7 @@ export function RelatedImageCard({ image }: Props) {
           {image.file_name}
         </div>
         <div className="result-meta">
-          {image.width} × {image.height} · {percent}% match
+          {image.width} × {image.height}
         </div>
         {openError && (
           <p className="result-meta" style={{ color: "var(--danger)", marginTop: 4 }}>

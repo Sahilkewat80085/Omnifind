@@ -4,71 +4,31 @@ from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.query.intent import detect_intent
 from core.vectorstore.qdrant_client import SearchHit, VectorService
-from models.schemas.file_schemas import FileType
+from database.session import SessionLocal
+from models.schemas.file_schemas import FileMetadata, FileType
 from models.schemas.search_schemas import CodeResult, DocumentResult, ImageResult, SearchResponse
+from services.metadata_service import MetadataService
 from utils.config import get_settings
 
 
 def drop_missing_files(hits: list[SearchHit]) -> list[SearchHit]:
-    """Discard hits whose file is no longer on disk.
-
-    The index is only reconciled with the disk when a folder is re-scanned,
-    so between a deletion and the next scan its vectors are still there and
-    still match. Returning one is the worst kind of wrong answer: it looks
-    like a real result until "Open" fails with file not found. Checking here
-    means a deleted file disappears from search the moment it is deleted,
-    and the scan-time prune is what stops it being checked forever.
-
-    One stat() per hit, on at most a few dozen paths — far cheaper than the
-    embedding work that produced them. Files on a disconnected network or
-    removable drive read as missing and drop out until it is back.
-    """
     return [hit for hit in hits if Path(hit.payload.get("path", "")).is_file()]
 
 
-def best_per_file(
-    results: list[DocumentResult | ImageResult | CodeResult],
-) -> list[DocumentResult | ImageResult | CodeResult]:
-    """Collapse a ranked list to one row per file, keeping its strongest hit.
-
-    This has to happen *before* the top-k cut, not after it. A long PDF or
-    source file produces dozens of chunks and several of them can match the
-    same query, so trimming chunks first could spend the whole result list on
-    one file: the caller asks for ten results and gets one filename ten times,
-    or exactly one file once the UI de-duplicates. Cutting files instead makes
-    top-k mean what it says.
-
-    Input must already be sorted by descending similarity — the first time a
-    file appears is then its best passage.
-    """
+def best_per_file(results: list[DocumentResult | ImageResult | CodeResult]) -> list[DocumentResult | ImageResult | CodeResult]:
     seen: set[str] = set()
     best: list[DocumentResult | ImageResult | CodeResult] = []
     for result in results:
-        if result.file_id in seen:
-            continue
-        seen.add(result.file_id)
-        best.append(result)
+        if result.file_id not in seen:
+            seen.add(result.file_id)
+            best.append(result)
     return best
 
 
-def _calibrate(
-    hits: list[SearchHit], *, floor: float, ceil: float, drop_below_floor: bool
-) -> list[SearchHit]:
-    """Map one modality's raw cosine scores onto a shared 0-1 scale.
-
-    bge (text) and CLIP (image) cosine scores live on different ranges, so raw
-    scores can't be compared across modalities. Each modality is rescaled
-    through its own measured noise floor and strong-match ceiling, which keeps
-    the absolute strength of a match — unlike min-max over the returned hits,
-    which always pins the best hit to 1.0 however weak it actually is.
-
-    `drop_below_floor` discards sub-noise hits instead of clamping them; used
-    for images, where an unrelated picture is an obvious wrong answer.
-    """
+def _calibrate(hits: list[SearchHit], *, floor: float, ceil: float, drop_below_floor: bool) -> list[SearchHit]:
     span = ceil - floor
-    if span <= 0:  # misconfigured; fall back to raw scores rather than divide by zero
+    if span <= 0:
         return hits
-
     calibrated = []
     for hit in hits:
         score = (hit.score - floor) / span
@@ -87,135 +47,76 @@ class SearchService:
         self._image_embedder = ImageEmbeddingService()
         self._settings = get_settings()
 
-    def search(
-        self,
-        query: str,
-        top_k: int | None = None,
-        file_type: FileType | None = None,
-    ) -> SearchResponse:
+    def search(self, query: str, top_k: int | None = None, file_type: FileType | None = None) -> SearchResponse:
         k = top_k or self._settings.search_top_k
-
-        # "mountain image" names the type it wants. Handing back a PDF that
-        # happens to discuss mountains is a wrong answer however strong the
-        # semantic match, so a stated type becomes a filter on which
-        # partitions are searched at all — not a ranking hint applied after.
         intent = detect_intent(query)
-
-        # An explicit `file_type` comes from the type filter in the UI and
-        # outranks anything read out of the wording: the user picked it on
-        # purpose, while the query word is a guess. When the two disagree the
-        # word evidently was not naming a container, so the raw query is
-        # embedded rather than the stripped one — dropping "image" from
-        # "image processing" while filtering to code would blur the subject.
         wants = file_type or intent.file_type
         embed_query = intent.query if wants == intent.file_type else query
-
         results: list[DocumentResult | ImageResult | CodeResult] = []
+        seen_paths: set[str] = set()
+
+        db = SessionLocal()
+        try:
+            filename_matches = MetadataService(db).search_by_filename(intent.query, file_type=wants)
+            for file_meta, score in filename_matches:
+                if not Path(file_meta.path).is_file() or file_meta.path in seen_paths:
+                    continue
+                seen_paths.add(file_meta.path)
+                results.append(self._filename_result(file_meta, score))
+        finally:
+            db.close()
 
         if wants in (None, FileType.document, FileType.code):
-            # Documents and code share the text partition, so one type can
-            # crowd the other out of a top-k before either is scored, and one
-            # file's chunks can crowd out every other file. Over-fetching
-            # candidates keeps both represented; the per-file collapse and
-            # [:k] below still trim it back to k files.
-            raw_text_hits = drop_missing_files(
-                self._vector_service.search_text(
-                    self._text_embedder.encode_query(embed_query),
-                    top_k=k * self._settings.search_candidate_factor,
-                )
+            query_vector = self._text_embedder.encode_query(embed_query)
+            candidate_limit = k * self._settings.search_candidate_factor
+            bands = (
+                (FileType.document, self._settings.search_text_score_floor, self._settings.search_text_score_ceil, False),
+                (FileType.code, self._settings.search_code_score_floor, self._settings.search_code_score_ceil, True),
             )
-            is_code = lambda hit: hit.payload.get("file_type") == FileType.code.value  # noqa: E731
-
-            if wants in (None, FileType.document):
-                results += [
-                    self._to_document_result(hit)
-                    for hit in _calibrate(
-                        [h for h in raw_text_hits if not is_code(h)],
-                        floor=self._settings.search_text_score_floor,
-                        ceil=self._settings.search_text_score_ceil,
-                        drop_below_floor=False,
-                    )
-                ]
-
-            if wants in (None, FileType.code):
-                # Its own band, and dropped rather than clamped — see the
-                # measurements behind search_code_score_* in Settings.
-                results += [
-                    self._to_code_result(hit)
-                    for hit in _calibrate(
-                        [h for h in raw_text_hits if is_code(h)],
-                        floor=self._settings.search_code_score_floor,
-                        ceil=self._settings.search_code_score_ceil,
-                        drop_below_floor=True,
-                    )
-                ]
+            for target_type, floor, ceil, drop in bands:
+                if wants not in (None, target_type):
+                    continue
+                hits = self._vector_service.search_text(query_vector, top_k=candidate_limit, file_type=target_type.value)
+                for hit in _calibrate(drop_missing_files(hits), floor=floor, ceil=ceil, drop_below_floor=drop):
+                    result = self._to_document_result(hit) if target_type == FileType.document else self._to_code_result(hit)
+                    existing = next((item for item in results if item.path == result.path), None)
+                    if existing is None:
+                        results.append(result)
+                    elif isinstance(existing, DocumentResult) and isinstance(result, DocumentResult) and existing.chunk_text.startswith("File:"):
+                        existing.chunk_text, existing.page_number, existing.chunk_index = result.chunk_text, result.page_number, result.chunk_index
+                    elif isinstance(existing, CodeResult) and isinstance(result, CodeResult) and existing.chunk_text.startswith("File:"):
+                        existing.chunk_text, existing.symbol, existing.line_start, existing.line_end = result.chunk_text, result.symbol, result.line_start, result.line_end
 
         if wants in (None, FileType.image):
-            # Reached only when images are actually wanted, so a code or
-            # document query never pays to load OpenCLIP.
-            results += [
-                self._to_image_result(hit)
-                for hit in _calibrate(
-                    drop_missing_files(
-                        self._vector_service.search_image(
-                            # One image is one vector, so an image cannot crowd
-                            # another out the way a file's chunks can — k here,
-                            # not the over-fetched candidate count.
-                            self._image_embedder.encode_text(embed_query),
-                            top_k=k,
-                        )
-                    ),
-                    floor=self._settings.search_image_score_floor,
-                    ceil=self._settings.search_image_score_ceil,
-                    drop_below_floor=True,
-                )
-            ]
+            hits = self._vector_service.search_image(self._image_embedder.encode_text(embed_query), top_k=k)
+            for hit in _calibrate(drop_missing_files(hits), floor=self._settings.search_image_score_floor, ceil=self._settings.search_image_score_ceil, drop_below_floor=True):
+                result = self._to_image_result(hit)
+                if not any(item.path == result.path for item in results):
+                    results.append(result)
 
-        results.sort(key=lambda r: r.similarity, reverse=True)
-        # `query` stays as typed — the UI echoes it back, and showing the
-        # stripped version would look like the search misread the question.
-        return SearchResponse(
-            query=query, results=best_per_file(results)[:k], filtered_to=wants
-        )
+        results.sort(key=lambda result: result.similarity, reverse=True)
+        return SearchResponse(query=query, results=best_per_file(results)[:k], filtered_to=wants)
+
+    @staticmethod
+    def _filename_result(file_meta: FileMetadata, score: float) -> DocumentResult | ImageResult | CodeResult:
+        if file_meta.file_type == FileType.document:
+            return DocumentResult(file_id=file_meta.id, file_name=file_meta.file_name, path=file_meta.path, similarity=score, page_number=1, chunk_text=f"File: {file_meta.file_name}", chunk_index=0)
+        if file_meta.file_type == FileType.image:
+            return ImageResult(file_id=file_meta.id, file_name=file_meta.file_name, path=file_meta.path, similarity=score, width=file_meta.image_width or 0, height=file_meta.image_height or 0)
+        return CodeResult(file_id=file_meta.id, file_name=file_meta.file_name, path=file_meta.path, similarity=score, language=file_meta.language or "code", symbol=None, line_start=1, line_end=1, chunk_text=f"File: {file_meta.file_name}", chunk_index=0)
 
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:
         p = hit.payload
-        return DocumentResult(
-            file_id=p["file_id"],
-            file_name=p["file_name"],
-            path=p["path"],
-            similarity=hit.score,
-            page_number=p.get("page_number"),
-            chunk_text=p["chunk_text"],
-            chunk_index=p["chunk_index"],
-        )
+        return DocumentResult(file_id=p["file_id"], file_name=p["file_name"], path=p["path"], similarity=hit.score, page_number=p.get("page_number"), chunk_text=p["chunk_text"], chunk_index=p["chunk_index"])
 
     @staticmethod
     def _to_code_result(hit: SearchHit) -> CodeResult:
         p = hit.payload
-        return CodeResult(
-            file_id=p["file_id"],
-            file_name=p["file_name"],
-            path=p["path"],
-            similarity=hit.score,
-            language=p.get("language", "text"),
-            symbol=p.get("symbol"),
-            line_start=p.get("line_start", 1),
-            line_end=p.get("line_end", 1),
-            chunk_text=p["chunk_text"],
-            chunk_index=p["chunk_index"],
-        )
+        return CodeResult(file_id=p["file_id"], file_name=p["file_name"], path=p["path"], similarity=hit.score, language=p.get("language", "text"), symbol=p.get("symbol"), line_start=p.get("line_start", 1), line_end=p.get("line_end", 1), chunk_text=p["chunk_text"], chunk_index=p["chunk_index"])
 
     @staticmethod
     def _to_image_result(hit: SearchHit) -> ImageResult:
         p = hit.payload
-        dims = p.get("image_dimensions", {})
-        return ImageResult(
-            file_id=p["file_id"],
-            file_name=p["file_name"],
-            path=p["path"],
-            similarity=hit.score,
-            width=dims.get("width", 0),
-            height=dims.get("height", 0),
-        )
+        dims = p.get("image_dimensions") or {}
+        return ImageResult(file_id=p["file_id"], file_name=p["file_name"], path=p["path"], similarity=hit.score, width=dims.get("width", 0), height=dims.get("height", 0))

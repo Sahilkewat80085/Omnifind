@@ -1,12 +1,11 @@
 import type { Health } from "../api/types";
 
-export type Page = "dashboard" | "index" | "search" | "ask" | "settings";
+export type Page = "dashboard" | "index" | "search" | "settings";
 
 const NAV: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "▤" },
   { id: "index", label: "Index folder", icon: "⊕" },
   { id: "search", label: "Search", icon: "⌕" },
-  { id: "ask", label: "Ask AI", icon: "✦" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -54,15 +53,6 @@ export function Sidebar({ page, onNavigate, health, online }: Props) {
           <span className={`status-dot ${statusClass}`} />
           {statusText}
         </div>
-        {online && (
-          // Whether AI is available still matters — it decides if the Ask page
-          // can answer at all. Which model serves it does not, so the name is
-          // no longer shown here; Settings has it for anyone who needs it.
-          <div className="status-line" style={{ marginTop: 6 }}>
-            <span className={`status-dot ${health?.ai_enabled ? "online" : "pending"}`} />
-            {health?.ai_enabled ? "AI ready" : "AI: no API key"}
-          </div>
-        )}
       </div>
     </aside>
   );
