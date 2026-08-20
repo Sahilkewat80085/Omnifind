@@ -61,6 +61,19 @@ export default function App() {
           </Banner>
         )}
 
+        {/* Distinct from the offline-backend banner above: the backend is up
+            and answering, it just cannot embed anything. Shown only for
+            "unavailable" — "pending" is the normal few seconds of warm-up and
+            must not raise an alarm on every start. */}
+        {health?.models_state === "unavailable" && page !== "settings" && (
+          <Banner kind="warning">
+            Embedding models are not downloaded, so search and indexing cannot run.
+            This is a one-time setup step — connect to the internet and run{" "}
+            <code>python scripts/fetch_models.py</code> in <code>omnifind/backend</code>,
+            then restart the backend. OmniFind runs offline after that.
+          </Banner>
+        )}
+
         {page === "dashboard" && <Dashboard onNavigate={setPage} />}
         {page === "index" && <IndexPage />}
         {page === "search" && <SearchPage />}

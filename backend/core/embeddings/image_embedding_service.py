@@ -4,6 +4,7 @@ import open_clip
 import torch
 from PIL import Image
 
+from core.embeddings.errors import ModelsNotAvailableError
 from utils.config import get_settings
 from utils.logger import get_logger
 
@@ -18,10 +19,17 @@ def _get_model_bundle():
         settings.image_embedding_model,
         settings.image_embedding_pretrained,
     )
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        settings.image_embedding_model, pretrained=settings.image_embedding_pretrained
-    )
-    tokenizer = open_clip.get_tokenizer(settings.image_embedding_model)
+    # open_clip has no local_files_only switch — it goes through
+    # huggingface_hub directly — so HF_HUB_OFFLINE set before import is the
+    # only lever here. See utils/offline.py.
+    try:
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            settings.image_embedding_model, pretrained=settings.image_embedding_pretrained
+        )
+        tokenizer = open_clip.get_tokenizer(settings.image_embedding_model)
+    except Exception as exc:
+        name = f"{settings.image_embedding_model} ({settings.image_embedding_pretrained})"
+        raise ModelsNotAvailableError(name, exc) from exc
     model.eval()
     return model, preprocess, tokenizer
 

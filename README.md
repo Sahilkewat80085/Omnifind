@@ -147,10 +147,15 @@ the user actually indexed are reachable, instead of anything on disk.
 
 ## Running it
 
+OmniFind needs the internet **once**, during setup, to download its embedding
+models (~740 MB). After `fetch_models.py` has run, every part of the app —
+indexing, semantic search, the folder watcher — works with the connection off.
+
 ```powershell
 # terminal 1 — backend
 cd omnifind\backend
 .venv\Scripts\activate
+python scripts\fetch_models.py   # one-time, needs internet
 uvicorn main:app --reload --port 8000
 
 # terminal 2 — frontend (one-time: winget install OpenJS.NodeJS.LTS, then reopen terminal)
