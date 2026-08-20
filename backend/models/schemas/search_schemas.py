@@ -57,3 +57,10 @@ class SearchResponse(BaseModel):
     query: str
     results: list[SearchResult]
     filtered_to: FileType | None = None
+    ignored_terms: list[str] = Field(default_factory=list)
+    """Words that appear in no indexed file, so were not required of a match.
+
+    Surfaced because a silently-dropped word is indistinguishable from a broken
+    search: without this, "invoice total amount due" quietly becomes a search
+    for three of those words and the page never says so.
+    """

@@ -95,7 +95,7 @@ def test_search_returns_only_the_requested_type(isolated_env, tmp_path):
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    response = SearchService().search("mountain image")
+    response = SearchService(db=db).search("mountain image")
 
     assert response.filtered_to == FileType.image
     assert not any(isinstance(r, DocumentResult) for r in response.results), (
@@ -127,7 +127,7 @@ def test_an_unfiltered_search_still_reaches_every_type(isolated_env, tmp_path):
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    response = SearchService().search("how much was the fee")
+    response = SearchService(db=db).search("how much was the fee")
 
     assert response.filtered_to is None
     assert response.results and response.results[0].file_name == "fees.txt"

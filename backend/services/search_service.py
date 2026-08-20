@@ -1,5 +1,4 @@
 import re
-from collections import defaultdict
 from pathlib import Path
 from typing import Sequence
 
@@ -8,7 +7,9 @@ from sqlalchemy.orm import Session
 from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.query.intent import detect_intent
+from core.query.literal import LiteralTerms, extract_literal_terms
 from core.vectorstore.qdrant_client import SearchHit, VectorService
+from database.models import ChunkRecord
 from database.session import SessionLocal
 from models.schemas.file_schemas import FileMetadata, FileType
 from models.schemas.search_schemas import (
@@ -18,8 +19,22 @@ from models.schemas.search_schemas import (
     SearchResponse,
     SearchResult,
 )
-from services.metadata_service import MetadataService, normalize_content_for_dedup
+from services.metadata_service import (
+    LiteralMatches,
+    MetadataService,
+    normalize_content_for_dedup,
+)
 from utils.config import get_settings
+
+# Which tier a file lands in. Rank is decided by *why* a file matched before it
+# is decided by how strongly: a file named for what you searched is the answer
+# you meant, even when a passage buried in another file scores higher.
+TIER_NAME = 0
+"""The file name carries the query."""
+TIER_CONTENT = 1
+"""The query's words are inside the file."""
+TIER_SEMANTIC = 2
+"""Neither - only meaning is close. Never reached while strict matching is on."""
 
 
 def drop_missing_files(hits: list[SearchHit]) -> list[SearchHit]:
@@ -124,252 +139,301 @@ class SearchService:
         top_k: int | None = None,
         file_type: FileType | None = None,
     ) -> SearchResponse:
+        """Find files, name matches first, then files containing the words.
+
+        With `search_strict_lexical` on - the default - a file that does not
+        contain what was typed is never returned, however close its embedding
+        sits. Semantic similarity orders the survivors and picks which passage
+        to show; it cannot put a file on screen by itself. Searching a name or
+        a college is a containment question, and a confidently-ranked file that
+        does not contain the name is simply a wrong answer.
+        """
         k = top_k or 200
 
         intent = detect_intent(query)
         wants = file_type if file_type is not None else intent.file_type
         search_query = intent.query if file_type is None else query
 
-        searching_images = (wants == FileType.image)
-        is_exact = is_exact_term_query(search_query)
+        terms = extract_literal_terms(search_query)
+        # "images" on its own demands nothing literal - it names a type and has
+        # no subject, so there is no word to require and the gate stays open.
+        strict = self._settings.search_strict_lexical and not terms.is_empty
 
-        # -------------------------------------------------------------
-        # 1. IMAGE SEARCH (Strict visual modality separation)
-        # -------------------------------------------------------------
-        if searching_images:
-            db = self._db or SessionLocal()
-            should_close = (self._db is None)
-            try:
-                meta_service = MetadataService(db)
-                filename_matches = meta_service.search_by_filename(search_query, file_type=FileType.image)
-            finally:
-                if should_close:
-                    db.close()
+        if wants == FileType.image:
+            return self._search_images(query, search_query, k, wants, strict)
 
-            image_results: list[ImageResult] = []
-            seen_img_paths: set[str] = set()
+        return self._search_text(query, search_query, terms, strict, k, wants)
 
-            for file_meta, score in filename_matches:
-                if Path(file_meta.path).is_file() and file_meta.path not in seen_img_paths:
-                    seen_img_paths.add(file_meta.path)
-                    image_results.append(
-                        ImageResult(
-                            file_id=file_meta.id,
-                            file_name=file_meta.file_name,
-                            path=file_meta.path,
-                            similarity=score,
-                            width=file_meta.image_width or 0,
-                            height=file_meta.image_height or 0,
-                            match_source="lexical",
-                        )
-                    )
+    # ------------------------------------------------------------------
+    # documents and code
+    # ------------------------------------------------------------------
 
-            image_hits = drop_missing_files(
-                self._vector_service.search_image(
-                    self._image_embedder.encode_text(search_query), top_k=k * 4
-                )
-            )
-            for hit in _calibrate(
-                image_hits,
-                floor=self._settings.search_image_score_floor,
-                ceil=self._settings.search_image_score_ceil,
-                drop_below_floor=True,
-            ):
-                img_res = self._to_image_result(hit)
-                if img_res.path not in seen_img_paths:
-                    seen_img_paths.add(img_res.path)
-                    image_results.append(img_res)
-
-            image_results.sort(key=lambda r: r.similarity, reverse=True)
-            return SearchResponse(query=query, results=image_results[:k], filtered_to=wants)
-
-        # -------------------------------------------------------------
-        # 2. DOCUMENT & CODE SEARCH (Hybrid Lexical + Semantic Retrieval)
-        # -------------------------------------------------------------
+    def _search_text(
+        self,
+        query: str,
+        search_query: str,
+        terms: LiteralTerms,
+        strict: bool,
+        k: int,
+        wants: FileType | None,
+    ) -> SearchResponse:
         db = self._db or SessionLocal()
-        should_close = (self._db is None)
-
-        lexical_hits_by_path: dict[str, SearchResult] = {}
-        lexical_scores: dict[str, float] = {}
-
+        should_close = self._db is None
         try:
             meta_service = MetadataService(db)
-
-            # Leg A1: Filename Matches
-            fn_matches = meta_service.search_by_filename(search_query, file_type=wants)
-            for file_meta, fn_score in fn_matches:
-                if not Path(file_meta.path).is_file():
-                    continue
-                p = file_meta.path
-                lexical_scores[p] = max(lexical_scores.get(p, 0.0), fn_score)
-                if file_meta.file_type == FileType.document.value:
-                    lexical_hits_by_path[p] = DocumentResult(
-                        file_id=file_meta.id,
-                        file_name=file_meta.file_name,
-                        path=file_meta.path,
-                        similarity=fn_score,
-                        page_number=1,
-                        chunk_text=f"File: {file_meta.file_name}",
-                        chunk_index=0,
-                        match_source="lexical",
-                    )
-                elif file_meta.file_type == FileType.code.value:
-                    lexical_hits_by_path[p] = CodeResult(
-                        file_id=file_meta.id,
-                        file_name=file_meta.file_name,
-                        path=file_meta.path,
-                        similarity=fn_score,
-                        language=file_meta.language or "code",
-                        symbol=None,
-                        line_start=1,
-                        line_end=1,
-                        chunk_text=f"File: {file_meta.file_name}",
-                        chunk_index=0,
-                        match_source="lexical",
-                    )
-
-            # Leg A2: Full-Text Chunk Matches (BM25 / Keyword Overlap)
-            chunk_matches = meta_service.search_chunks_lexical(search_query, file_type=wants, limit=k * 2)
-            for chunk_rec, chunk_score in chunk_matches:
-                if not Path(chunk_rec.path).is_file():
-                    continue
-                p = chunk_rec.path
-                lexical_scores[p] = max(lexical_scores.get(p, 0.0), chunk_score)
-                if chunk_rec.file_type == FileType.document.value:
-                    lexical_hits_by_path[p] = DocumentResult(
-                        file_id=chunk_rec.file_id,
-                        file_name=chunk_rec.file_name,
-                        path=chunk_rec.path,
-                        similarity=chunk_score,
-                        page_number=chunk_rec.page_number,
-                        chunk_text=chunk_rec.chunk_text,
-                        chunk_index=chunk_rec.chunk_index,
-                        match_source="lexical",
-                    )
-                elif chunk_rec.file_type == FileType.code.value:
-                    lexical_hits_by_path[p] = CodeResult(
-                        file_id=chunk_rec.file_id,
-                        file_name=chunk_rec.file_name,
-                        path=chunk_rec.path,
-                        similarity=chunk_score,
-                        language=chunk_rec.language or "code",
-                        symbol=chunk_rec.symbol,
-                        line_start=chunk_rec.line_start or 1,
-                        line_end=chunk_rec.line_end or 1,
-                        chunk_text=chunk_rec.chunk_text,
-                        chunk_index=chunk_rec.chunk_index,
-                        match_source="lexical",
-                    )
+            literal: LiteralMatches = meta_service.search_files_literal(terms, file_type=wants)
+            name_matches = {
+                file_meta.path: (file_meta, score)
+                for file_meta, score in meta_service.search_by_filename(search_query, file_type=wants)
+                if Path(file_meta.path).is_file()
+            }
         finally:
             if should_close:
                 db.close()
 
-        # Leg B: Semantic Vector Search
-        query_vector = self._text_embedder.encode_query(search_query)
-        semantic_hits_by_path: dict[str, SearchResult] = {}
-        semantic_scores: dict[str, float] = {}
+        semantic_cards, semantic_scores = self._semantic_text_pass(search_query, k, wants)
 
-        if wants in (None, FileType.document):
-            doc_hits = drop_missing_files(
-                self._vector_service.search_text(
-                    query_vector, top_k=k * 4, file_type=FileType.document.value
-                )
-            )
-            for hit in _calibrate(
-                doc_hits,
-                floor=self._settings.search_text_score_floor,
-                ceil=self._settings.search_text_score_ceil,
-                drop_below_floor=True,
-            ):
-                doc_res = self._to_document_result(hit)
-                p = doc_res.path
-                if p not in semantic_hits_by_path or doc_res.similarity > semantic_scores.get(p, 0.0):
-                    semantic_hits_by_path[p] = doc_res
-                    semantic_scores[p] = doc_res.similarity
+        # The gate. Everything below only orders what this admits.
+        admitted: set[str] = set(name_matches)
+        admitted |= {
+            path for path, match in literal.by_path.items() if Path(path).is_file()
+        }
+        if not strict:
+            admitted |= set(semantic_cards)
 
-        if wants in (None, FileType.code):
-            code_hits = drop_missing_files(
-                self._vector_service.search_text(
-                    query_vector, top_k=k * 4, file_type=FileType.code.value
-                )
-            )
-            for hit in _calibrate(
-                code_hits,
-                floor=self._settings.search_code_score_floor,
-                ceil=self._settings.search_code_score_ceil,
-                drop_below_floor=True,
-            ):
-                code_res = self._to_code_result(hit)
-                p = code_res.path
-                if p not in semantic_hits_by_path or code_res.similarity > semantic_scores.get(p, 0.0):
-                    semantic_hits_by_path[p] = code_res
-                    semantic_scores[p] = code_res.similarity
+        is_exact = is_exact_term_query(search_query)
+        w_lex, w_sem = (0.85, 0.15) if is_exact else (0.55, 0.45)
 
-        # -------------------------------------------------------------
-        # 3. EXACT-TERM GROUNDING & ZERO-MATCH CHECK
-        # -------------------------------------------------------------
-        # If the user queried an exact acronym/term (e.g. AWS) and there are ZERO lexical matches:
-        # Require exceptionally high semantic confidence (> 0.85) to prevent hallucinations/noise.
-        if is_exact:
-            if not lexical_hits_by_path:
-                max_sem = max(semantic_scores.values()) if semantic_scores else 0.0
-                if max_sem < 0.85:
-                    # Grounded zero-match: do not return noise documents for un-matched exact terms
-                    return SearchResponse(query=query, results=[], filtered_to=wants)
+        ranked: list[tuple[int, float, SearchResult]] = []
+        for path in admitted:
+            match = literal.by_path.get(path)
+            named = name_matches.get(path)
+            semantic = semantic_scores.get(path, 0.0)
 
-        # -------------------------------------------------------------
-        # 4. RECIPROCAL RANK FUSION (RRF)
-        # -------------------------------------------------------------
-        all_candidate_paths = set(lexical_hits_by_path.keys()) | set(semantic_hits_by_path.keys())
+            name_hit = named is not None or (match is not None and match.name_hit)
+            content_hit = match is not None and match.content_hit
 
-        # Sort lexical and semantic ranked lists
-        lexical_sorted = sorted(lexical_hits_by_path.keys(), key=lambda p: lexical_scores.get(p, 0.0), reverse=True)
-        semantic_sorted = sorted(semantic_hits_by_path.keys(), key=lambda p: semantic_scores.get(p, 0.0), reverse=True)
-
-        lexical_rank_map = {p: i + 1 for i, p in enumerate(lexical_sorted)}
-        semantic_rank_map = {p: i + 1 for i, p in enumerate(semantic_sorted)}
-
-        RRF_K = 60
-        w_lex = 0.85 if is_exact else 0.40
-        w_sem = 0.15 if is_exact else 0.60
-
-        fused_results: list[tuple[SearchResult, float]] = []
-
-        for p in all_candidate_paths:
-            r_lex = lexical_rank_map.get(p)
-            r_sem = semantic_rank_map.get(p)
-
-            score_lex = (w_lex / (RRF_K + r_lex)) if r_lex else 0.0
-            score_sem = (w_sem / (RRF_K + r_sem)) if r_sem else 0.0
-            rrf_score = score_lex + score_sem
-
-            # Determine best card representation and match source
-            if p in lexical_hits_by_path and p in semantic_hits_by_path:
-                card = semantic_hits_by_path[p]
-                card.match_source = "hybrid"
-                card.similarity = min(1.0, (lexical_scores.get(p, 0.0) * 0.5) + (semantic_scores.get(p, 0.0) * 0.5))
-            elif p in lexical_hits_by_path:
-                card = lexical_hits_by_path[p]
-                card.match_source = "lexical"
-                card.similarity = lexical_scores.get(p, 1.0)
+            if name_hit:
+                tier = TIER_NAME
+            elif match is not None:
+                tier = TIER_CONTENT
             else:
-                card = semantic_hits_by_path[p]
-                card.match_source = "semantic"
-                card.similarity = semantic_scores.get(p, 0.0)
+                tier = TIER_SEMANTIC
 
-            fused_results.append((card, rrf_score))
+            lexical = 0.0
+            if named is not None:
+                lexical = max(lexical, named[1])
+            if match is not None:
+                lexical = max(lexical, match.content_score)
 
-        # Sort by RRF score descending
-        fused_results.sort(key=lambda item: item[1], reverse=True)
-        ordered_candidates = [item[0] for item in fused_results]
+            strength = min(1.0, w_lex * lexical + w_sem * semantic)
+            if tier == TIER_SEMANTIC:
+                strength = semantic
 
-        # -------------------------------------------------------------
-        # 5. DEDUPLICATION (Per-File & Cross-File Near Duplicates)
-        # -------------------------------------------------------------
-        deduped_per_file = best_per_file(ordered_candidates)
-        collapsed = collapse_near_duplicates(deduped_per_file)
+            # A file named for the query is the strongest evidence there is, so
+            # it never *reads* as a weak hit - but the floor is applied to the
+            # number on the card, not to the number it is ranked by, or every
+            # name match would tie and their order would be arbitrary.
+            similarity = max(strength, 0.85) if tier == TIER_NAME else strength
 
-        return SearchResponse(query=query, results=collapsed[:k], filtered_to=wants)
+            card = self._card_for(
+                path,
+                chunk=match.best_chunk if match else None,
+                file_meta=(named[0] if named else (match.file if match else None)),
+                semantic_card=semantic_cards.get(path),
+            )
+            if card is None:
+                continue
+
+            card.similarity = similarity
+            card.match_source = (
+                "hybrid" if (tier != TIER_SEMANTIC and semantic > 0.0)
+                else ("lexical" if tier != TIER_SEMANTIC else "semantic")
+            )
+            ranked.append((tier, strength, card))
+
+        ranked.sort(key=lambda item: (item[0], -item[1], item[2].file_name))
+        ordered = [card for _, _, card in ranked]
+
+        collapsed = collapse_near_duplicates(best_per_file(ordered))
+        return SearchResponse(
+            query=query,
+            results=collapsed[:k],
+            filtered_to=wants,
+            ignored_terms=list(literal.ignored_terms) if strict else [],
+        )
+
+    def _semantic_text_pass(
+        self, search_query: str, k: int, wants: FileType | None
+    ) -> tuple[dict[str, SearchResult], dict[str, float]]:
+        """Rank by meaning. Used to order and illustrate, never to admit."""
+        query_vector = self._text_embedder.encode_query(search_query)
+        cards: dict[str, SearchResult] = {}
+        scores: dict[str, float] = {}
+
+        partitions = (
+            (FileType.document, self._to_document_result,
+             self._settings.search_text_score_floor, self._settings.search_text_score_ceil),
+            (FileType.code, self._to_code_result,
+             self._settings.search_code_score_floor, self._settings.search_code_score_ceil),
+        )
+        for partition, to_result, floor, ceil in partitions:
+            if wants not in (None, partition):
+                continue
+            hits = drop_missing_files(
+                self._vector_service.search_text(
+                    query_vector, top_k=k * 4, file_type=partition.value
+                )
+            )
+            for hit in _calibrate(hits, floor=floor, ceil=ceil, drop_below_floor=True):
+                result = to_result(hit)
+                if result.similarity > scores.get(result.path, 0.0) or result.path not in scores:
+                    cards[result.path] = result
+                    scores[result.path] = result.similarity
+        return cards, scores
+
+    @staticmethod
+    def _card_for(
+        path: str,
+        *,
+        chunk: ChunkRecord | None,
+        file_meta: FileMetadata | None,
+        semantic_card: SearchResult | None,
+    ) -> SearchResult | None:
+        """Build the result card, preferring the passage that holds the words.
+
+        A card showing a passage the query does not appear in is how a strict
+        search still looks wrong to the person reading it, so the literal chunk
+        wins over the semantically nearest one whenever there is one.
+        """
+        if chunk is not None:
+            if chunk.file_type == FileType.code.value:
+                return CodeResult(
+                    file_id=chunk.file_id,
+                    file_name=chunk.file_name,
+                    path=chunk.path,
+                    similarity=0.0,
+                    language=chunk.language or "code",
+                    symbol=chunk.symbol,
+                    line_start=chunk.line_start or 1,
+                    line_end=chunk.line_end or 1,
+                    chunk_text=chunk.chunk_text,
+                    chunk_index=chunk.chunk_index,
+                    match_source="lexical",
+                )
+            return DocumentResult(
+                file_id=chunk.file_id,
+                file_name=chunk.file_name,
+                path=chunk.path,
+                similarity=0.0,
+                page_number=chunk.page_number,
+                chunk_text=chunk.chunk_text,
+                chunk_index=chunk.chunk_index,
+                match_source="lexical",
+            )
+
+        if semantic_card is not None:
+            return semantic_card
+
+        if file_meta is None:
+            return None
+
+        # Matched on its name with nothing quotable inside it.
+        if file_meta.file_type == FileType.code.value:
+            return CodeResult(
+                file_id=file_meta.id,
+                file_name=file_meta.file_name,
+                path=file_meta.path,
+                similarity=0.0,
+                language=file_meta.language or "code",
+                symbol=None,
+                line_start=1,
+                line_end=1,
+                chunk_text=f"File: {file_meta.file_name}",
+                chunk_index=0,
+                match_source="lexical",
+            )
+        if file_meta.file_type == FileType.document.value:
+            return DocumentResult(
+                file_id=file_meta.id,
+                file_name=file_meta.file_name,
+                path=file_meta.path,
+                similarity=0.0,
+                page_number=1,
+                chunk_text=f"File: {file_meta.file_name}",
+                chunk_index=0,
+                match_source="lexical",
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # images
+    # ------------------------------------------------------------------
+
+    def _search_images(
+        self, query: str, search_query: str, k: int, wants: FileType | None, strict: bool
+    ) -> SearchResponse:
+        """Images rank by name first, then by what they show.
+
+        Strict literal matching cannot apply to the contents of a photograph -
+        an image holds no text to contain a word - so a CLIP match *is* the
+        content tier here. Dropping it would leave image search able to find
+        nothing but filenames.
+        """
+        db = self._db or SessionLocal()
+        should_close = self._db is None
+        try:
+            name_matches = MetadataService(db).search_by_filename(
+                search_query, file_type=FileType.image
+            )
+        finally:
+            if should_close:
+                db.close()
+
+        ranked: list[tuple[int, float, ImageResult]] = []
+        seen: set[str] = set()
+
+        for file_meta, score in name_matches:
+            if not Path(file_meta.path).is_file() or file_meta.path in seen:
+                continue
+            seen.add(file_meta.path)
+            ranked.append((
+                TIER_NAME,
+                max(score, 0.85),
+                ImageResult(
+                    file_id=file_meta.id,
+                    file_name=file_meta.file_name,
+                    path=file_meta.path,
+                    similarity=max(score, 0.85),
+                    width=file_meta.image_width or 0,
+                    height=file_meta.image_height or 0,
+                    match_source="lexical",
+                ),
+            ))
+
+        image_hits = drop_missing_files(
+            self._vector_service.search_image(
+                self._image_embedder.encode_text(search_query), top_k=k * 4
+            )
+        )
+        for hit in _calibrate(
+            image_hits,
+            floor=self._settings.search_image_score_floor,
+            ceil=self._settings.search_image_score_ceil,
+            drop_below_floor=True,
+        ):
+            result = self._to_image_result(hit)
+            if result.path in seen:
+                continue
+            seen.add(result.path)
+            ranked.append((TIER_CONTENT, result.similarity, result))
+
+        ranked.sort(key=lambda item: (item[0], -item[1]))
+        return SearchResponse(
+            query=query,
+            results=[card for _, _, card in ranked][:k],
+            filtered_to=wants,
+        )
 
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:

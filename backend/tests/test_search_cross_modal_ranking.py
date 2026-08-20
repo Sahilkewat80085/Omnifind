@@ -87,7 +87,7 @@ def test_image_outranks_documents_for_a_visual_query(isolated_env, tmp_path):
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    money = SearchService().search("invoice total amount due")
+    money = SearchService(db=db).search("invoice total amount due")
     assert not any(isinstance(r, ImageResult) for r in money.results), (
         "an unrelated image leaked into a document query"
     )

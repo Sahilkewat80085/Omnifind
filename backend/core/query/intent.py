@@ -36,6 +36,11 @@ _WORDS_BY_TYPE = {
     FileType.code: _CODE_WORDS,
 }
 
+# Every word that names a container rather than contents. The literal-match
+# gate needs the same list: a word already spent selecting *which* partition to
+# search must not also be demanded inside the file.
+TYPE_WORDS = _IMAGE_WORDS | _DOCUMENT_WORDS | _CODE_WORDS
+
 # Left behind once the type word is removed: "picture of a dog" → "of a dog".
 # Trimming these gives the embedding "dog", which is what was actually meant.
 _EDGE_STOPWORDS = {"of", "a", "an", "the", "for", "with", "in", "on", "any", "some", "all"}

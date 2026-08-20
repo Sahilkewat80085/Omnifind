@@ -20,7 +20,7 @@ Semantic search over your own local files, plus cited AI answers drawn from them
 | 7 | **Embedding Services** | `BAAI/bge-small-en-v1.5` for text, OpenCLIP ViT-B/32 for images |
 | 8 | **Vector Storage** | Qdrant (embedded, on-disk — no server to install), named vectors so text and image embeddings share one collection |
 | 9 | **Indexing Service + API** | End-to-end pipeline: scan → parse → chunk → embed → store, with progress reporting |
-| 10 | **Search Service + API** | Natural-language query → semantic search across **both** documents and images, ranked together |
+| 10 | **Search Service + API** | Literal matching across **both** documents and images, ranked together: files named for the query first, then files containing it, ordered within each tier by meaning |
 
 ### Milestone 2 — RAG answering layer ✅
 
@@ -99,6 +99,55 @@ inside it at 0.63. Code is **dropped** below its floor rather than clamped —
 like images, unlike documents — because an unrelated function in a result list
 is a wrong answer, not a weak one. The same floor gates RAG retrieval, so noise
 cannot reach the prompt either.
+
+### Strict literal matching ✅
+
+The Search page answers a *containment* question. "Show me the files with my
+college name in them" is answered correctly only by files that contain those
+words — a file that is merely *about* colleges is a wrong answer however high
+its cosine score. So on this screen similarity is demoted to a tie-break: it
+orders the files that already matched and picks which passage to show, and it
+can never put a file on screen by itself.
+
+Results come back in two tiers, in this order:
+
+1. **Named for the query** — the words are in the file name.
+2. **Contains the query** — the words are somewhere inside it.
+
+Nothing else is returned. Where no file contains the words, the page says so
+rather than offering the nearest thing it found.
+
+Three rules stop "strict" from turning into "brittle":
+
+- **Words the index has never seen are dropped from the demand.** No file can
+  be required to contain a word that appears nowhere, or one typo would empty
+  the result list. This is what BM25 does with a zero document frequency term.
+  The dropped words are named on screen, because a silently ignored word is
+  indistinguishable from a broken search. If *no* word of the query is findable
+  there is genuinely nothing to show, and the result is empty.
+- **Matching is by word stem and prefix.** "college" finds "colleges" and
+  "normalization" finds "normalizing", or the gate would reject files the user
+  can plainly see are matches. Words of three letters or fewer still demand an
+  exact match, since prefix-matching "ai" against "airport" is how a strict
+  filter quietly stops being strict. `"database"` is not satisfied by a file
+  that only ever says `"data"` — the prefix rule runs one way only.
+- **The unit of judgement is the file, not the chunk.** A name on a cover page
+  and a surname in the body are one match. Chunking is an implementation detail
+  of retrieval, and the user never agreed to it.
+
+**The deliberate cost:** every word is required, so more words *narrow* a
+search. `"Sinhgad College of Engineering"` will not return a file named
+`Sinhgad_College_Certificate.pdf` that never says "Engineering" — searching
+`"Sinhgad"` returns it. That is the price of never showing another college's
+brochure for this query, and it is the tradeoff this screen deliberately takes.
+Meaning-only ranking has not been removed: **Ask AI** retrieves purely by
+embedding and is untouched by any of this, and setting
+`SEARCH_STRICT_LEXICAL=false` restores the old behaviour on Search too.
+
+> Passage text lives in SQLite as well as in Qdrant. An index built before that
+> was true has vectors but no text, and strict matching then finds nothing but
+> file names. `python -m scripts.backfill_chunks` repairs it from the Qdrant
+> payloads without re-embedding anything.
 
 ### Query type intent ✅
 
@@ -231,10 +280,18 @@ words like "class notes" are never mistaken for a type).
    indexed files. Nothing mocked.
 2. **Index folder** — point it at `omnifind/examples` (or any real folder) and
    watch the live progress bar.
-3. **Search** — the core thesis. Ask something with *no keyword overlap* with
-   the target file, e.g. `"how much money was paid"` against an invoice.
-   Windows Search cannot do this; OmniFind ranks it first. Note that documents
-   and images come back in one merged list despite using two different models.
+3. **Search** — every result contains what you typed, and the two tiers are
+   visible in one query. Search `"invoice"`: the file *named* `Sample_Invoice`
+   comes first, files that merely mention invoices follow, and nothing else
+   appears at all. Then search a college or a person's name and point out what
+   is **missing** — files on the same subject that never say the name are gone,
+   which is the difference between a search and a recommendation. Windows
+   Search matches names only; this also reads inside the files, and orders
+   what it finds by meaning.
+
+   Search is deliberately literal (see *Strict literal matching* below); the
+   semantic half of the thesis is demonstrated by **Ask AI** in the next steps,
+   which retrieves by meaning alone.
 4. **Ask AI** — ask a question in full sentences, e.g. `"what was billed on the
    invoice?"`. Point out that the answer cites `[1]`, and the Sources panel
    below shows the exact chunk and page each citation came from — this is what
@@ -253,11 +310,12 @@ words like "class notes" are never mistaken for a type).
    searched — which is correct, because the brochure that mentions mountains is
    a PDF, not a picture. Naming the type is what stops a document answering a
    question about a photo.
-8. **Search the code** — ask `"where do we calibrate scores across the two
-   modalities?"`. The `_calibrate` function comes back first at ~91%, with its
-   real line numbers, even though the query names neither the function nor the
-   file. Then ask `"what stops indexing from walking into node_modules?"` — the
-   scanner, at ~83%.
+8. **Search the code** — search `"calibrate"`. The `_calibrate` function comes
+   back as a whole symbol with its real line numbers, not a 512-character
+   window sliced through the middle of it, and the files that merely *call* it
+   rank below the one that defines it. Then search `"node_modules"` to land in
+   the scanner's prune list. Searching by what code *does* rather than what it
+   says is step 9's job, not this one.
 9. **Ask about the code** — `"how does the frontend remember which backend URL
    to talk to?"` returns a cited answer pointing at `SettingsPage.tsx` with line
    ranges. This is the same RAG path as the documents, with no extra retrieval
@@ -265,8 +323,15 @@ words like "class notes" are never mistaken for a type).
 
 ### Talking points
 
-- **"It understands meaning, not filenames."** The no-keyword-overlap query is
-  the single strongest proof.
+- **"It understands meaning, not filenames."** Ask AI is where this is proved:
+  `"how much money was paid"` finds the invoice through the embedding alone,
+  with no word in common. Search deliberately does *not* work this way — see
+  the next point.
+- **"A search is a containment question, and the answer respects that."** Ask
+  for a college name and you get the files with that name in them, ranked by
+  where it appears — never a file that is merely about the same subject. Both
+  behaviours are in the project on purpose, one per screen, because "find my
+  certificate" and "what did I pay in fees?" are different questions.
 - **"Two data types, one searchable space."** Text and images use different
   models (bge-small vs. OpenCLIP) but share one Qdrant collection.
 - **"The AI cannot make things up about your files."** The prompt forbids

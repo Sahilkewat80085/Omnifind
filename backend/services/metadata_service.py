@@ -2,6 +2,7 @@ import difflib
 import hashlib
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from core.query.literal import LiteralTerms, StemIndex
 from database.models import ChunkRecord, FileRecord, WatchedFolder
 from models.schemas.file_schemas import FileMetadata, FileType, IndexStats
 from models.schemas.index_schemas import WatchedFolderResponse
@@ -26,6 +28,30 @@ _COMMON_STOPWORDS = {
     "for", "with", "and", "from", "any", "some", "all", "our", "you", "your",
     "this", "that", "these", "those", "have", "has", "had", "about",
 }
+
+
+@dataclass(frozen=True)
+class LiteralFileMatch:
+    """One file that literally contains what the query asked for."""
+
+    file: FileMetadata
+    name_hit: bool
+    """The demand is met by the file name alone - what puts it in the top tier."""
+    content_hit: bool
+    """Some passage inside the file carries the query's words."""
+    content_score: float
+    """How completely, and how repeatedly, the contents answer the query."""
+    best_chunk: ChunkRecord | None
+    """The passage to show on the card: the one covering most of the query."""
+
+
+@dataclass(frozen=True)
+class LiteralMatches:
+    by_path: dict[str, LiteralFileMatch]
+    ignored_terms: tuple[str, ...]
+    """Query words that appear in no indexed file, so could not be demanded."""
+    any_term_findable: bool
+    """False when nothing in the index carries any word of the query."""
 
 
 def normalize_content_for_dedup(text: str) -> str:
@@ -216,6 +242,126 @@ class MetadataService:
 
         matches.sort(key=lambda x: x[1], reverse=True)
         return matches[:limit]
+
+    def search_files_literal(
+        self, terms: LiteralTerms, file_type: FileType | None = None
+    ) -> LiteralMatches:
+        """Find every file that literally contains what the query asked for.
+
+        The unit of judgement is the *file*, not the chunk: a name written in a
+        cover page and a surname repeated in the body are one match, even
+        though no single passage holds both. Chunking is an implementation
+        detail of retrieval and the user never agreed to it.
+        """
+        if terms.is_empty:
+            return LiteralMatches(by_path={}, ignored_terms=(), any_term_findable=True)
+
+        try:
+            files = self.list_files(file_type=file_type)
+            chunk_stmt = select(ChunkRecord)
+            if file_type is not None:
+                chunk_stmt = chunk_stmt.where(ChunkRecord.file_type == file_type.value)
+            chunks = self.db.scalars(chunk_stmt).all()
+        except OperationalError:
+            return LiteralMatches(by_path={}, ignored_terms=(), any_term_findable=False)
+
+        chunks_by_path: dict[str, list[ChunkRecord]] = {}
+        for chunk in chunks:
+            chunks_by_path.setdefault(chunk.path, []).append(chunk)
+
+        stems = terms.stems
+        phrase = terms.phrase
+
+        # Pass 1: index every file, and learn which query words exist at all.
+        indexed: list[dict[str, Any]] = []
+        findable: set[str] = set()
+
+        for file_meta in files:
+            name_index = StemIndex()
+            name_index.add(file_meta.file_name)
+
+            content_index = StemIndex()
+            best_chunk: ChunkRecord | None = None
+            best_covered = -1
+            matching_chunks = 0
+            phrase_in_content = False
+
+            for chunk in sorted(chunks_by_path.get(file_meta.path, []), key=lambda c: c.chunk_index):
+                chunk_index = StemIndex()
+                chunk_index.add(chunk.chunk_text)
+                content_index.merge(chunk_index)
+
+                covered = sum(1 for s in stems if chunk_index.contains(s))
+                if phrase and phrase in " ".join(chunk.chunk_text.lower().split()):
+                    # A quoted phrase found whole is the most complete answer a
+                    # passage can give, whatever its individual words scored.
+                    phrase_in_content = True
+                    covered = max(covered, len(stems), 1)
+                if covered:
+                    matching_chunks += 1
+                # The passage shown on the card is the one that answers most of
+                # the query, and the earliest such passage when they tie.
+                if covered > best_covered:
+                    best_covered = covered
+                    best_chunk = chunk
+
+            demanded = len(stems) or 1
+            best_coverage = min(1.0, max(best_covered, 0) / demanded)
+
+            phrase_in_name = bool(phrase) and phrase in " ".join(file_meta.file_name.lower().split())
+            in_name = {s for s in stems if name_index.contains(s)}
+            in_content = {s for s in stems if content_index.contains(s)}
+            findable |= in_name | in_content
+
+            indexed.append({
+                "file": file_meta,
+                "in_name": in_name,
+                "in_content": in_content,
+                "phrase_in_name": phrase_in_name,
+                "phrase_in_content": phrase_in_content,
+                "best_chunk": best_chunk,
+                "best_coverage": best_coverage,
+                "matching_chunks": matching_chunks,
+            })
+
+        # A word the index has never seen cannot be demanded of any file - see
+        # this module's docstring. A *quoted* phrase is exempt: quoting is the
+        # user saying "this exactly, or nothing".
+        required = {s for s in stems if s in findable}
+        ignored = tuple(
+            token for token, s in zip(terms.tokens, stems) if s not in findable
+        )
+        if not required and not phrase:
+            return LiteralMatches(by_path={}, ignored_terms=ignored, any_term_findable=False)
+
+        by_path: dict[str, LiteralFileMatch] = {}
+        for entry in indexed:
+            covered_anywhere = entry["in_name"] | entry["in_content"]
+            if not required.issubset(covered_anywhere):
+                continue
+            if phrase and not (entry["phrase_in_name"] or entry["phrase_in_content"]):
+                continue
+
+            name_hit = required.issubset(entry["in_name"]) and (not phrase or entry["phrase_in_name"])
+            content_hit = bool(entry["in_content"] & required) or entry["phrase_in_content"]
+
+            # How completely one passage answers the query, plus a small credit
+            # for the file returning to the subject rather than mentioning it once.
+            content_score = min(
+                1.0,
+                0.7 * entry["best_coverage"] + 0.3 * min(1.0, entry["matching_chunks"] / 3.0),
+            )
+
+            file_meta = entry["file"]
+            by_path[file_meta.path] = LiteralFileMatch(
+                file=file_meta,
+                name_hit=name_hit,
+                content_hit=content_hit,
+                content_score=content_score,
+                best_chunk=entry["best_chunk"] if content_hit else None,
+            )
+
+        return LiteralMatches(by_path=by_path, ignored_terms=ignored, any_term_findable=True)
 
     def get_by_path(self, path: str) -> FileMetadata | None:
         resolved = str(Path(path).resolve())

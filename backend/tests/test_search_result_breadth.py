@@ -66,12 +66,15 @@ def test_one_long_file_cannot_consume_the_whole_result_list(isolated_env, tmp_pa
         ),
         encoding="utf-8",
     )
+    # All three say both words, because the point under test is the per-file
+    # collapse and not the literal gate: a file that never says "database"
+    # is now correctly absent, which would fail this test for the wrong reason.
     (source / "second.txt").write_text(
         "Normalizing a relational database schema into third normal form.",
         encoding="utf-8",
     )
     (source / "third.txt").write_text(
-        "Redundant data in tables and how normalization removes it.",
+        "Redundant data in database tables, and how normalization removes it.",
         encoding="utf-8",
     )
 
@@ -80,7 +83,7 @@ def test_one_long_file_cannot_consume_the_whole_result_list(isolated_env, tmp_pa
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    response = SearchService().search("database normalization", top_k=3)
+    response = SearchService(db=db).search("database normalization", top_k=3)
 
     names = [r.file_name for r in response.results]
     assert len(names) == len(set(names)), f"same file listed twice: {names}"
@@ -156,7 +159,7 @@ def test_explicit_file_type_overrides_the_word_in_the_query(isolated_env, tmp_pa
     db = sessionmaker(bind=engine)()
     IndexingService(MetadataService(db)).index_folder(str(source))
 
-    response = SearchService().search("code of conduct", file_type=FileType.document)
+    response = SearchService(db=db).search("code of conduct", file_type=FileType.document)
 
     assert response.filtered_to == FileType.document
     assert not any(isinstance(r, CodeResult) for r in response.results)

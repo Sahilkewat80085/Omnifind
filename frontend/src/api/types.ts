@@ -172,6 +172,8 @@ export interface SearchResponse {
   query: string;
   results: SearchResult[];
   filtered_to: FileTypeName | null;
+  /** Words that appear in no indexed file, so were not required of a match. */
+  ignored_terms: string[];
 }
 
 export interface Citation {

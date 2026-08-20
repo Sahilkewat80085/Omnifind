@@ -37,11 +37,11 @@ def test_index_folder_then_search_returns_expected_top_results(isolated_env, tmp
     assert summary.indexed == 3
     assert summary.removed == 0
 
-    doc_response = SearchService().search("database normalization")
+    doc_response = SearchService(db=db).search("database normalization")
     assert doc_response.results[0].file_name == "dbms_notes.pdf"
     assert doc_response.results[0].result_type.value == "document"
 
-    notes_response = SearchService().search("meeting notes")
+    notes_response = SearchService(db=db).search("meeting notes")
     assert notes_response.results[0].file_name == "meeting_notes.docx"
 
     db.close()

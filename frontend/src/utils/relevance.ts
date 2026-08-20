@@ -26,24 +26,15 @@ export function dedupeByFile(results: SearchResult[]): SearchResult[] {
   });
 }
 
-export interface PresentedResults {
-  /** Every file worth showing, best first: confident matches, then weak ones. */
-  ordered: SearchResult[];
-  /** How many leading entries of `ordered` clear the presentation floor. */
-  confidentCount: number;
-}
-
 /**
- * Split what came back into what to show and what to hold behind "explore more".
+ * What the Search page renders: all unique matched files, in the order given.
+ *
+ * The rank the backend sends is a tiered one - files named for the query, then
+ * files containing it - so the page must not re-sort by score. The old
+ * confident/weak split did exactly that and would now shuffle a name match
+ * below a passage match. `isRelevant` survives for the Ask page, where a
+ * single similarity floor is still the right question to ask.
  */
-export function presentResults(results: SearchResult[]): PresentedResults {
-  const files = dedupeByFile(results);
-  const confident = files.filter((r) => isRelevant(r.similarity));
-  const weak = files.filter((r) => !isRelevant(r.similarity));
-  return { ordered: [...confident, ...weak], confidentCount: confident.length };
-}
-
-/** What the Search page renders: all unique matched files. */
 export function presentableResults(results: SearchResult[]): SearchResult[] {
   return dedupeByFile(results);
 }

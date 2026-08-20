@@ -37,7 +37,7 @@ def test_rescan_removes_a_deleted_file_from_metadata_and_vectors(isolated_env, t
 
     indexing_service.index_folder(str(source))
     assert metadata_service.get_stats().total_files == 2
-    assert SearchService().search("person sitting on a train").results
+    assert SearchService(db=db).search("person sitting on a train").results
 
     (source / "gone.txt").unlink()
     summary = indexing_service.index_folder(str(source))
@@ -47,7 +47,7 @@ def test_rescan_removes_a_deleted_file_from_metadata_and_vectors(isolated_env, t
     assert metadata_service.get_by_path(str((source / "gone.txt").resolve())) is None
 
     # The vectors have to go too, or search keeps answering from them.
-    hit_names = {r.file_name for r in SearchService().search("person sitting on a train").results}
+    hit_names = {r.file_name for r in SearchService(db=db).search("person sitting on a train").results}
     assert "gone.txt" not in hit_names
 
     db.close()
@@ -66,7 +66,7 @@ def test_deleted_image_disappears_from_search(isolated_env, tmp_path):
 
     # Before any re-scan: the vector is still in Qdrant, but the disk check
     # keeps it out of the results, so no user ever gets a dead "Open" button.
-    assert all(Path(r.path).exists() for r in SearchService().search("a photo").results)
+    assert all(Path(r.path).exists() for r in SearchService(db=db).search("a photo").results)
 
     indexing_service.index_folder(str(source))
     assert MetadataService(db).get_stats().total_files == 0

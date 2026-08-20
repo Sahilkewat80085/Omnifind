@@ -19,8 +19,31 @@ def isolated_env(tmp_path, monkeypatch):
     get_settings.cache_clear()
     _get_client.cache_clear()
 
+    # The environment variable alone does not move SQLite. `database.session`
+    # builds its engine at import time, and every module that does
+    # `from database.session import SessionLocal` holds a reference to that one
+    # sessionmaker - so setting DATABASE_URL after the fact isolated nothing,
+    # and a bare `SearchService()` in a test read the developer's real index.
+    # That went unnoticed while search was vector-first and the real metadata
+    # database happened to hold no passage text. Re-binding the shared
+    # sessionmaker in place is what every holder of it actually sees.
+    from sqlalchemy import create_engine
+
+    from database.models import Base
+    from database.session import SessionLocal, _resolve_sqlite_url
+
+    test_engine = create_engine(
+        _resolve_sqlite_url(f"sqlite:///{(tmp_path / 'test.db').as_posix()}"),
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=test_engine)
+    previous_bind = SessionLocal.kw.get("bind")
+    SessionLocal.configure(bind=test_engine)
+
     yield tmp_path
 
+    SessionLocal.configure(bind=previous_bind)
+    test_engine.dispose()
     try:
         _get_client().close()
     except Exception:

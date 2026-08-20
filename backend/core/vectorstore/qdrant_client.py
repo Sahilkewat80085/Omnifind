@@ -1,5 +1,6 @@
 import os
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -193,6 +194,31 @@ class VectorService:
             limit=top_k,
         )
         return [SearchHit(score=r.score, payload=r.payload or {}) for r in results]
+
+    def iter_payloads(self, batch: int = 512) -> Iterator[dict[str, Any]]:
+        """Walk every indexed point's payload.
+
+        Exists so an index built before chunk text was mirrored into SQLite can
+        be repaired from what Qdrant already holds, instead of re-embedding
+        every file to recover text that was never lost.
+        """
+        if not self.collection_exists():
+            return
+
+        offset: Any = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self._collection,
+                with_payload=True,
+                with_vectors=False,
+                limit=batch,
+                offset=offset,
+            )
+            for point in points:
+                if point.payload:
+                    yield point.payload
+            if offset is None:
+                return
 
     def get_points_by_path(self, path: str) -> list[dict[str, Any]]:
         """Retrieve all indexed points and vectors for a given file path."""

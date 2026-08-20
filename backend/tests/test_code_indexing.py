@@ -245,7 +245,7 @@ def test_code_is_searchable_by_plain_language(isolated_env, tmp_path):
     IndexingService(MetadataService(db)).index_folder(str(source))
 
     query = "how do we check a user login credential?"
-    results = SearchService().search(query).results
+    results = SearchService(db=db).search(query).results
 
     top = results[0]
     assert isinstance(top, CodeResult)
@@ -359,7 +359,7 @@ def test_unrelated_query_returns_no_code_at_all(isolated_env, tmp_path):
     # Deliberately no type word: "photo"/"image" would filter to pictures and
     # test the intent filter instead of the code relevance floor, which is
     # what must do the work here.
-    results = SearchService().search("scenic mountain ranges and alpine lakes").results
+    results = SearchService(db=db).search("scenic mountain ranges and alpine lakes").results
 
     assert not any(isinstance(r, CodeResult) for r in results), (
         "unrelated source code leaked into a query about scenery"

@@ -8,7 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { FileCard } from "../components/FileCard";
 import { LoadingIndicator } from "../components/LoadingIndicator";
 import { SearchBar } from "../components/SearchBar";
-import { presentResults } from "../utils/relevance";
+import { presentableResults } from "../utils/relevance";
 
 const TYPE_FILTERS: Array<{ label: string; value: FileTypeName | null }> = [
   { label: "All types", value: null },
@@ -69,14 +69,15 @@ export function SearchPage() {
       <header className="page-header">
         <h1>Search</h1>
         <p className="subtitle">
-          Ask in plain English. This matches meaning, not filenames — documents and
-          images are embedded by different models but ranked together in one list.
-          Point it at a repository and it searches source code the same way.
+          Every result contains what you typed. Files <em>named</em> for your search
+          come first, then files with it inside them — a file that matches only in
+          meaning is not shown. Documents, images and source code are searched
+          together, and meaning still decides the order within each group.
         </p>
       </header>
 
       <SearchBar
-        placeholder="e.g. how much did I pay in fees?"
+        placeholder={'e.g. fee receipt, or "Sinhgad College" for an exact phrase'}
         buttonLabel="Search"
         busy={busy}
         onSubmit={handleSearch}
@@ -110,7 +111,11 @@ export function SearchPage() {
 
       {!busy && outcome && (() => {
         const { response, requestedType } = outcome;
-        const { ordered } = presentResults(response.results);
+        // Order comes from the backend and is meaningful: files named for the
+        // query, then files containing it. Re-sorting here by score alone would
+        // undo that, so the UI only de-duplicates.
+        const ordered = presentableResults(response.results);
+        const ignored = response.ignored_terms ?? [];
         const totalPages = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
         const currentPage = Math.min(page, totalPages);
         const startIndex = (currentPage - 1) * PAGE_SIZE;
@@ -141,16 +146,23 @@ export function SearchPage() {
               </div>
             )}
 
+            {ignored.length > 0 && ordered.length > 0 && (
+              <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+                No indexed file contains {ignored.map((t) => `“${t}”`).join(", ")}, so{" "}
+                {ignored.length === 1 ? "it was" : "they were"} not required of these results.
+              </div>
+            )}
+
             {visible.length === 0 ? (
               <EmptyState
                 icon="⌕"
-                title={typeLabel ? `No matching ${typeLabel.slice(0, -1)}` : "No item matched"}
+                title={`No file contains “${response.query}”`}
                 hint={
                   requestedType && typeLabel
-                    ? `The ${typeLabel} filter is on, so only ${typeLabel} were searched. Choose “All types” to search everything instead.`
+                    ? `Only ${typeLabel} were searched, and none of them contain every word of your search. Choose “All types” to search everything, or search fewer words.`
                     : typeLabel
-                      ? `Your search asked for ${typeLabel}, so only ${typeLabel} were searched. Nothing in that category is a close enough match — drop the word “${typeWord}” to search everything instead.`
-                      : "Nothing in the index is a close enough match. Try describing the content differently, or index the folder that contains it."
+                      ? `Your search asked for ${typeLabel}, so only ${typeLabel} were searched. Drop the word “${typeWord}” to search everything instead.`
+                      : "A file has to contain every word you searched for. Try fewer words, check the spelling, or index the folder that holds the file."
                 }
               />
             ) : (

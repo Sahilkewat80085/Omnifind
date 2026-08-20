@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # Search
     search_top_k: int = 10
 
+    # Similarity may reorder files that literally match, never add one that
+    # does not. Turning this off restores meaning-only ranking, in which a file
+    # that never mentions what you typed can still be the top result.
+    search_strict_lexical: bool = True
+
     # Cross-modal score calibration.
     #
     # bge and CLIP cosine scores are not comparable: bge sits around 0.40-0.50
