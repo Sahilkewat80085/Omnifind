@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Sequence
 
 from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.embeddings.text_embedding_service import TextEmbeddingService
@@ -6,7 +7,13 @@ from core.query.intent import detect_intent
 from core.vectorstore.qdrant_client import SearchHit, VectorService
 from database.session import SessionLocal
 from models.schemas.file_schemas import FileMetadata, FileType
-from models.schemas.search_schemas import CodeResult, DocumentResult, ImageResult, SearchResponse
+from models.schemas.search_schemas import (
+    CodeResult,
+    DocumentResult,
+    ImageResult,
+    SearchResponse,
+    SearchResult,
+)
 from services.metadata_service import MetadataService
 from utils.config import get_settings
 
@@ -35,6 +42,18 @@ def _calibrate(
     return calibrated
 
 
+def best_per_file(results: Sequence[SearchResult]) -> list[SearchResult]:
+    """Collapse ranked chunks to one row per file, preserving original order."""
+    seen: set[str] = set()
+    deduped: list[SearchResult] = []
+    for r in results:
+        if r.file_id in seen:
+            continue
+        seen.add(r.file_id)
+        deduped.append(r)
+    return deduped
+
+
 class SearchService:
     def __init__(self) -> None:
         self._vector_service = VectorService()
@@ -42,11 +61,18 @@ class SearchService:
         self._image_embedder = ImageEmbeddingService()
         self._settings = get_settings()
 
-    def search(self, query: str, top_k: int | None = None) -> SearchResponse:
+    def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        file_type: FileType | None = None,
+    ) -> SearchResponse:
         k = top_k or self._settings.search_top_k
 
         intent = detect_intent(query)
-        wants = intent.file_type
+        wants = file_type if file_type is not None else intent.file_type
+        search_query = intent.query if file_type is None else query
+
         results: list[DocumentResult | ImageResult | CodeResult] = []
         seen_paths: set[str] = set()
 
@@ -54,7 +80,7 @@ class SearchService:
         db = SessionLocal()
         try:
             meta_service = MetadataService(db)
-            filename_matches = meta_service.search_by_filename(intent.query, file_type=wants)
+            filename_matches = meta_service.search_by_filename(search_query, file_type=wants)
             for file_meta, score in filename_matches:
                 if not Path(file_meta.path).is_file():
                     continue
@@ -105,12 +131,12 @@ class SearchService:
 
         # 2. Semantic Vector Search across Document & Code Partitions
         if wants in (None, FileType.document, FileType.code):
-            query_vector = self._text_embedder.encode_query(intent.query)
+            query_vector = self._text_embedder.encode_query(search_query)
 
             if wants in (None, FileType.document):
                 doc_hits = drop_missing_files(
                     self._vector_service.search_text(
-                        query_vector, top_k=k, file_type=FileType.document.value
+                        query_vector, top_k=k * 4, file_type=FileType.document.value
                     )
                 )
                 for hit in _calibrate(
@@ -120,7 +146,6 @@ class SearchService:
                     drop_below_floor=False,
                 ):
                     doc_res = self._to_document_result(hit)
-                    # If this file was already matched by filename at 1.0, update its chunk text preview if helpful
                     existing = next((r for r in results if r.path == doc_res.path), None)
                     if existing is None:
                         results.append(doc_res)
@@ -132,7 +157,7 @@ class SearchService:
             if wants in (None, FileType.code):
                 code_hits = drop_missing_files(
                     self._vector_service.search_text(
-                        query_vector, top_k=k, file_type=FileType.code.value
+                        query_vector, top_k=k * 4, file_type=FileType.code.value
                     )
                 )
                 for hit in _calibrate(
@@ -155,7 +180,7 @@ class SearchService:
         if wants in (None, FileType.image):
             image_hits = drop_missing_files(
                 self._vector_service.search_image(
-                    self._image_embedder.encode_text(intent.query), top_k=k
+                    self._image_embedder.encode_text(search_query), top_k=k * 4
                 )
             )
             for hit in _calibrate(
@@ -168,9 +193,10 @@ class SearchService:
                 if not any(r.path == img_res.path for r in results):
                     results.append(img_res)
 
-        # 4. Sort all results by similarity descending (1.0 filename matches naturally sit at the top)
+        # 4. Sort all results by similarity descending and collapse per file
         results.sort(key=lambda r: r.similarity, reverse=True)
-        return SearchResponse(query=query, results=results[:k], filtered_to=wants)
+        deduped = best_per_file(results)
+        return SearchResponse(query=query, results=deduped[:k], filtered_to=wants)
 
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:
