@@ -58,6 +58,20 @@ is unaffected — only `/ask` responds `503` with an explanatory message, and
 
 ## Run
 
+As a desktop app — a native window, no browser:
+
+```bash
+python desktop.py
+```
+
+The backend runs on a thread inside that process on an OS-assigned port, and
+exits when the window closes. Requires the frontend to have been built once
+(`npm run build` in `frontend/`), since `main.py` serves `frontend/dist` at `/`
+when it exists. Mounting the UI at `/` is done after the routers, so it cannot
+shadow `/search` or `/health`.
+
+As an API only, for development against Vite's dev server:
+
 ```bash
 uvicorn main:app --reload --port 8000
 ```

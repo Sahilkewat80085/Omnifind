@@ -2,6 +2,7 @@ import type {
   AskResponse,
   FileIndexDetail,
   FileMetadata,
+  FileTypeName,
   Health,
   IndexStats,
   IndexStatus,
@@ -10,7 +11,20 @@ import type {
   WatcherActivity,
 } from "./types";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+/**
+ * Where the API lives when the user has not overridden it in Settings.
+ *
+ * In a production build the backend serves this bundle itself, so the API is
+ * on the same origin and the correct answer is "wherever this page came from"
+ * — the desktop launcher binds an OS-assigned port, and hard-coding 8000 would
+ * point the app at a port nothing is listening on. In dev the bundle is served
+ * by Vite on :5173 while the backend runs separately, so the default has to
+ * name that backend explicitly.
+ */
+const DEFAULT_BASE_URL = import.meta.env.DEV
+  ? "http://127.0.0.1:8000"
+  : window.location.origin;
+
 const STORAGE_KEY = "omnifind.backendUrl";
 
 export class ApiError extends Error {
@@ -95,8 +109,20 @@ export const api = {
       },
     ),
 
-  search: (query: string) =>
-    request<SearchResponse>("/search?q=" + encodeURIComponent(query)),
+  /**
+   * `limit` counts files, not chunks - the backend keeps only each file's best
+   * passage before trimming. The Search page asks for more than it renders so
+   * "explore more" reveals the rest without a second round trip.
+   */
+  search: (
+    query: string,
+    options: { limit?: number; fileType?: FileTypeName | null } = {},
+  ) => {
+    const params = new URLSearchParams({ q: query });
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.fileType) params.set("file_type", options.fileType);
+    return request<SearchResponse>("/search?" + params.toString());
+  },
 
   ask: (query: string, topK?: number) =>
     request<AskResponse>("/ask", {

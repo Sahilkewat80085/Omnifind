@@ -29,5 +29,11 @@ Pillow==11.0.0
 # --- File system watcher ---
 watchdog==6.0.0
 
+# --- Desktop shell ---
+# Renders the bundled UI in a native window using the WebView2 runtime that
+# ships with Windows, so there is no browser and no localhost URL for the user.
+# Pulls in pythonnet for the WinForms host.
+pywebview==6.2.1
+
 # --- LLM / RAG ---
 google-genai==1.16.1
