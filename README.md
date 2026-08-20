@@ -151,6 +151,27 @@ OmniFind needs the internet **once**, during setup, to download its embedding
 models (~740 MB). After `fetch_models.py` has run, every part of the app —
 indexing, semantic search, the folder watcher — works with the connection off.
 
+### As a desktop app
+
+Double-click **`OmniFind.bat`**, or:
+
+```powershell
+cd omnifind\backend
+.venv\Scripts\python.exe desktop.py
+```
+
+A native window opens — no browser, no URL to visit. The backend runs inside
+that same process on an OS-assigned port and stops when the window closes, so
+there is no server left running afterwards and nothing to start by hand.
+
+This needs the frontend built once (`cd omnifind\frontend && npm run build`);
+the backend serves the bundle itself, which is also why the UI and the API
+share one origin.
+
+### As a web app (development)
+
+Two terminals, with Vite's hot reload:
+
 ```powershell
 # terminal 1 — backend
 cd omnifind\backend

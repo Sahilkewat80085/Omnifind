@@ -10,7 +10,20 @@ import type {
   WatcherActivity,
 } from "./types";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+/**
+ * Where the API lives when the user has not overridden it in Settings.
+ *
+ * In a production build the backend serves this bundle itself, so the API is
+ * on the same origin and the correct answer is "wherever this page came from"
+ * — the desktop launcher binds an OS-assigned port, and hard-coding 8000 would
+ * point the app at a port nothing is listening on. In dev the bundle is served
+ * by Vite on :5173 while the backend runs separately, so the default has to
+ * name that backend explicitly.
+ */
+const DEFAULT_BASE_URL = import.meta.env.DEV
+  ? "http://127.0.0.1:8000"
+  : window.location.origin;
+
 const STORAGE_KEY = "omnifind.backendUrl";
 
 export class ApiError extends Error {
