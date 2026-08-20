@@ -30,7 +30,13 @@ export function CodeCard({ result }: Props) {
           <span className="result-meta">
             lines {result.line_start}–{result.line_end} ({lineCount} line{lineCount === 1 ? "" : "s"})
           </span>
+          {result.match_source && (
+            <span className="match-source-badge" title={`Matched via ${result.match_source} retrieval`}>
+              {result.match_source === "hybrid" ? "⚡ Hybrid" : result.match_source === "lexical" ? "🔤 Exact Keyword" : "🧠 Semantic"}
+            </span>
+          )}
         </div>
+
 
         <div className="result-path">{result.path}</div>
 

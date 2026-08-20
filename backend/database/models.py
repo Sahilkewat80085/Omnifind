@@ -34,6 +34,24 @@ class FileRecord(Base):
     language: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class ChunkRecord(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_id)
+    file_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    file_name: Mapped[str] = mapped_column(String, nullable=False)
+    file_type: Mapped[str] = mapped_column(String, nullable=False, index=True)  # "document" | "code"
+    path: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    language: Mapped[str | None] = mapped_column(String, nullable=True)
+    chunk_text: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
 class WatchedFolder(Base):
     __tablename__ = "watched_folders"
 

@@ -130,6 +130,9 @@ export interface DocumentResult {
   page_number: number | null;
   chunk_text: string;
   chunk_index: number;
+  match_source?: "lexical" | "semantic" | "hybrid";
+  duplicate_count?: number;
+  duplicate_files?: string[];
 }
 
 export interface ImageResult {
@@ -140,6 +143,9 @@ export interface ImageResult {
   similarity: number;
   width: number;
   height: number;
+  match_source?: "lexical" | "semantic" | "hybrid";
+  duplicate_count?: number;
+  duplicate_files?: string[];
 }
 
 export interface CodeResult {
@@ -154,7 +160,11 @@ export interface CodeResult {
   line_end: number;
   chunk_text: string;
   chunk_index: number;
+  match_source?: "lexical" | "semantic" | "hybrid";
+  duplicate_count?: number;
+  duplicate_files?: string[];
 }
+
 
 export type SearchResult = DocumentResult | ImageResult | CodeResult;
 

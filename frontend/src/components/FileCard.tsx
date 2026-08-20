@@ -34,7 +34,18 @@ export function FileCard({ result }: Props) {
               {result.width} × {result.height}
             </span>
           )}
+          {result.match_source && (
+            <span className="match-source-badge" title={`Matched via ${result.match_source} retrieval`}>
+              {result.match_source === "hybrid" ? "⚡ Hybrid" : result.match_source === "lexical" ? "🔤 Exact Keyword" : "🧠 Semantic"}
+            </span>
+          )}
+          {result.duplicate_count && result.duplicate_count > 0 ? (
+            <span className="duplicate-badge" title={`Identical content found in: ${result.duplicate_files?.join(', ')}`}>
+              +{result.duplicate_count} duplicate{result.duplicate_count > 1 ? 's' : ''}
+            </span>
+          ) : null}
         </div>
+
 
         <div className="result-path">{result.path}</div>
 

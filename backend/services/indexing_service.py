@@ -146,6 +146,7 @@ class IndexingService:
 
         if chunks:
             vectors = self._text_embedder.encode_documents([c.chunk_text for c in chunks])
+            chunk_records_data = []
             for chunk, vector in zip(chunks, vectors):
                 self._vector_service.upsert_text_chunk(
                     file_id=file_id,
@@ -156,9 +157,20 @@ class IndexingService:
                     chunk_index=chunk.chunk_index,
                     vector=vector,
                 )
+                chunk_records_data.append({
+                    "chunk_index": chunk.chunk_index,
+                    "page_number": chunk.page_number,
+                    "chunk_text": chunk.chunk_text,
+                })
+            self._metadata_service.upsert_chunks(
+                file_id=file_id,
+                file_name=scanned.file_name,
+                file_type=FileType.document,
+                path=scanned.path,
+                chunks=chunk_records_data,
+            )
         else:
             logger.warning("No extractable text in %s; indexing fallback text vector", scanned.path)
-            # Create a fallback chunk embedding based on file name and path for scanned/graphic PDFs
             fallback_text = scanned.file_name.replace("_", " ").replace("-", " ")
             vectors = self._text_embedder.encode_documents([fallback_text])
             self._vector_service.upsert_text_chunk(
@@ -169,6 +181,17 @@ class IndexingService:
                 chunk_text=f"Document: {scanned.file_name}",
                 chunk_index=0,
                 vector=vectors[0],
+            )
+            self._metadata_service.upsert_chunks(
+                file_id=file_id,
+                file_name=scanned.file_name,
+                file_type=FileType.document,
+                path=scanned.path,
+                chunks=[{
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "chunk_text": f"Document: {scanned.file_name}",
+                }],
             )
 
         self._metadata_service.upsert_file(
@@ -196,6 +219,7 @@ class IndexingService:
                     for c in chunks
                 ]
             )
+            chunk_records_data = []
             for chunk, vector in zip(chunks, vectors):
                 self._vector_service.upsert_code_chunk(
                     file_id=file_id,
@@ -209,6 +233,21 @@ class IndexingService:
                     chunk_index=chunk.chunk_index,
                     vector=vector,
                 )
+                chunk_records_data.append({
+                    "chunk_index": chunk.chunk_index,
+                    "line_start": chunk.line_start,
+                    "line_end": chunk.line_end,
+                    "symbol": chunk.symbol,
+                    "language": parsed.language,
+                    "chunk_text": chunk.chunk_text,
+                })
+            self._metadata_service.upsert_chunks(
+                file_id=file_id,
+                file_name=scanned.file_name,
+                file_type=FileType.code,
+                path=scanned.path,
+                chunks=chunk_records_data,
+            )
         else:
             logger.info("No indexable code in %s", scanned.path)
 
@@ -221,6 +260,7 @@ class IndexingService:
             chunk_count=len(chunks),
             language=parsed.language,
         )
+
 
     def _index_image(self, scanned: ScannedFile, file_id: str) -> None:
         info = read_image_info(scanned.path)

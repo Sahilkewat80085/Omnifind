@@ -1,14 +1,16 @@
 import difflib
+import hashlib
 import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from database.models import FileRecord, WatchedFolder
+from database.models import ChunkRecord, FileRecord, WatchedFolder
 from models.schemas.file_schemas import FileMetadata, FileType, IndexStats
 from models.schemas.index_schemas import WatchedFolderResponse
 from utils.logger import get_logger
@@ -26,6 +28,12 @@ _COMMON_STOPWORDS = {
 }
 
 
+def normalize_content_for_dedup(text: str) -> str:
+    """Produces a deterministic MD5 hash of alphanumeric lowercased tokens."""
+    cleaned = re.sub(r"[^a-zA-Z0-9]", "", text.lower())
+    return hashlib.md5(cleaned[:4000].encode("utf-8", errors="ignore")).hexdigest()
+
+
 def calculate_filename_match_score(query_str: str, file_name: str) -> float:
     """Calculates a normalized score (0.0 to 1.0) indicating how well a filename matches a search query."""
     fn_lower = file_name.lower()
@@ -38,7 +46,6 @@ def calculate_filename_match_score(query_str: str, file_name: str) -> float:
         any(q_lower.startswith(f"{qw} ") for qw in _QUESTION_WORDS) or q_lower.endswith("?")
     )
 
-    # 1. Exact match of query string anywhere in filename (e.g. "nptel" in "nptel payment.pdf", "python" in "test_python.py")
     if not is_question and q_lower in fn_lower:
         return 1.0
 
@@ -51,7 +58,6 @@ def calculate_filename_match_score(query_str: str, file_name: str) -> float:
         return 0.0
 
     if is_question:
-        # For full natural language questions, only match if all non-stop query tokens match the filename
         if len(q_tokens) >= 2:
             matched_q_tokens = sum(1 for t in q_tokens if t in fn_lower)
             if matched_q_tokens == len(q_tokens):
@@ -65,7 +71,6 @@ def calculate_filename_match_score(query_str: str, file_name: str) -> float:
         if q_tok in fn_lower:
             matched_tokens += 1
         else:
-            # Fuzzy match token against filename tokens (e.g., 'nptl' matches 'nptel')
             close = [
                 t
                 for t in fn_tokens
@@ -125,6 +130,93 @@ class MetadataService:
         self.db.refresh(record)
         return FileMetadata.model_validate(record)
 
+    def upsert_chunks(
+        self,
+        *,
+        file_id: str,
+        file_name: str,
+        file_type: FileType,
+        path: str,
+        chunks: list[dict[str, Any]],
+    ) -> None:
+        resolved = str(Path(path).resolve())
+        # Delete existing chunks for this path
+        self.db.execute(delete(ChunkRecord).where(ChunkRecord.path == resolved))
+
+        for c in chunks:
+            chunk_text = c.get("chunk_text", "")
+            rec = ChunkRecord(
+                file_id=file_id,
+                file_name=file_name,
+                file_type=file_type.value,
+                path=resolved,
+                chunk_index=c.get("chunk_index", 0),
+                page_number=c.get("page_number"),
+                line_start=c.get("line_start"),
+                line_end=c.get("line_end"),
+                symbol=c.get("symbol"),
+                language=c.get("language"),
+                chunk_text=chunk_text,
+                content_hash=normalize_content_for_dedup(chunk_text),
+            )
+            self.db.add(rec)
+        self.db.commit()
+
+    def delete_chunks_by_path(self, path: str) -> None:
+        resolved = str(Path(path).resolve())
+        self.db.execute(delete(ChunkRecord).where(ChunkRecord.path == resolved))
+        self.db.commit()
+
+    def search_chunks_lexical(
+        self, query: str, file_type: FileType | None = None, limit: int = 200
+    ) -> list[tuple[ChunkRecord, float]]:
+        """Performs lexical full-text matching against indexed chunks."""
+        q_clean = query.strip()
+        if not q_clean:
+            return []
+
+        # Tokenize query
+        q_tokens = [t.lower() for t in re.findall(r"[a-zA-Z0-9]+", q_clean) if len(t) >= 1]
+        if not q_tokens:
+            return []
+
+        stmt = select(ChunkRecord)
+        if file_type is not None:
+            stmt = stmt.where(ChunkRecord.file_type == file_type.value)
+
+        # Require at least one token match in chunk_text
+        try:
+            records = self.db.scalars(stmt).all()
+        except OperationalError:
+            return []
+
+        matches: list[tuple[ChunkRecord, float]] = []
+        is_exact_phrase = q_clean.startswith('"') and q_clean.endswith('"')
+        target_phrase = q_clean.strip('"').lower()
+
+        for rec in records:
+            text_lower = rec.chunk_text.lower()
+
+            if is_exact_phrase:
+                if target_phrase in text_lower:
+                    matches.append((rec, 1.0))
+                continue
+
+            # Check if all or subset of tokens match
+            matched_count = sum(1 for tok in q_tokens if tok in text_lower)
+            if matched_count > 0:
+                fraction = matched_count / len(q_tokens)
+                # Exact single word / acronym match bonus
+                if len(q_tokens) == 1 and q_tokens[0] in text_lower:
+                    score = 1.0
+                else:
+                    score = fraction * 0.95
+                if score >= 0.5:
+                    matches.append((rec, score))
+
+        matches.sort(key=lambda x: x[1], reverse=True)
+        return matches[:limit]
+
     def get_by_path(self, path: str) -> FileMetadata | None:
         resolved = str(Path(path).resolve())
         record = self.db.scalar(select(FileRecord).where(FileRecord.path == resolved))
@@ -156,7 +248,6 @@ class MetadataService:
         for file_meta in all_files:
             score = calculate_filename_match_score(query, file_meta.file_name)
 
-            # Special keyword handling for programming languages / file extensions
             if score < 0.80:
                 if q_clean in ("python", "py") and (
                     file_meta.extension in (".py", ".pyw", ".ipynb")
@@ -179,6 +270,7 @@ class MetadataService:
 
     def delete_by_path(self, path: str) -> bool:
         resolved = str(Path(path).resolve())
+        self.delete_chunks_by_path(resolved)
         record = self.db.scalar(select(FileRecord).where(FileRecord.path == resolved))
         if record is None:
             return False
@@ -190,6 +282,8 @@ class MetadataService:
         if not paths:
             return 0
         resolved_paths = [str(Path(p).resolve()) for p in paths]
+        for p in resolved_paths:
+            self.delete_chunks_by_path(p)
         records = self.db.scalars(select(FileRecord).where(FileRecord.path.in_(resolved_paths))).all()
         for record in records:
             self.db.delete(record)

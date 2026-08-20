@@ -1,5 +1,5 @@
 from typing import Union
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from models.schemas.file_schemas import FileType
 
@@ -13,6 +13,9 @@ class DocumentResult(BaseModel):
     page_number: int | None
     chunk_text: str
     chunk_index: int
+    match_source: str = "semantic"  # "lexical" | "semantic" | "hybrid"
+    duplicate_count: int = 0
+    duplicate_files: list[str] = Field(default_factory=list)
 
 
 class ImageResult(BaseModel):
@@ -23,6 +26,9 @@ class ImageResult(BaseModel):
     similarity: float
     width: int
     height: int
+    match_source: str = "semantic"
+    duplicate_count: int = 0
+    duplicate_files: list[str] = Field(default_factory=list)
 
 
 class CodeResult(BaseModel):
@@ -39,6 +45,9 @@ class CodeResult(BaseModel):
     line_end: int
     chunk_text: str
     chunk_index: int
+    match_source: str = "semantic"
+    duplicate_count: int = 0
+    duplicate_files: list[str] = Field(default_factory=list)
 
 
 SearchResult = Union[DocumentResult, ImageResult, CodeResult]
