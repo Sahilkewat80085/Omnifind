@@ -154,12 +154,20 @@ class VectorService:
         )
         self._client.upsert(collection_name=self._collection, points=[point])
 
+    def upsert_points(self, points: list[qmodels.PointStruct]) -> None:
+        """Upserts a batch of points (vectors and payloads) into the collection."""
+        if not points:
+            return
+        self.ensure_collection()
+        self._client.upsert(collection_name=self._collection, points=points)
+
     def search_text(
         self,
         query_vector: list[float],
         top_k: int,
         file_type: str | None = None,
     ) -> list[SearchHit]:
+
         # Nothing indexed yet means no hits, not an error. Without this the
         # first thing a new user does - install, open the app, type a query -
         # is answered with a 500, because searching a collection that does not

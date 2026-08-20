@@ -141,27 +141,69 @@ class IndexingService:
             self._index_image(scanned, registered.id)
 
     def _index_document(self, scanned: ScannedFile, file_id: str) -> None:
-        pages = parse_document(scanned.path, scanned.extension)
-        chunks = chunk_pages(pages)
+        try:
+            from core.document_pipeline.pipeline import DocumentPipeline
+            pipeline = DocumentPipeline()
+            doc_context = pipeline.extract_context(scanned.path)
 
-        if chunks:
-            vectors = self._text_embedder.encode_documents([c.chunk_text for c in chunks])
+            chunks = doc_context.get("chunks", [])
+            tables = doc_context.get("tables", [])
+
+            points = []
             chunk_records_data = []
-            for chunk, vector in zip(chunks, vectors):
-                self._vector_service.upsert_text_chunk(
-                    file_id=file_id,
-                    file_name=scanned.file_name,
-                    path=scanned.path,
-                    page_number=chunk.page_number,
-                    chunk_text=chunk.chunk_text,
-                    chunk_index=chunk.chunk_index,
-                    vector=vector,
-                )
+
+            for idx, c in enumerate(chunks):
+                if c.get("embedding"):
+                    points.append(
+                        qmodels.PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector={TEXT_VECTOR_NAME: c["embedding"]},
+                            payload={
+                                "file_id": file_id,
+                                "file_name": scanned.file_name,
+                                "file_type": "document",
+                                "path": scanned.path,
+                                "page_number": None,
+                                "location": c.get("location"),
+                                "heading_context": c.get("heading_context"),
+                                "chunk_text": c.get("text", ""),
+                                "chunk_index": idx,
+                            },
+                        )
+                    )
                 chunk_records_data.append({
-                    "chunk_index": chunk.chunk_index,
-                    "page_number": chunk.page_number,
-                    "chunk_text": chunk.chunk_text,
+                    "chunk_index": idx,
+                    "page_number": None,
+                    "chunk_text": c.get("text", ""),
                 })
+
+            for t_idx, t in enumerate(tables):
+                if t.get("embedding"):
+                    points.append(
+                        qmodels.PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector={TEXT_VECTOR_NAME: t["embedding"]},
+                            payload={
+                                "file_id": file_id,
+                                "file_name": scanned.file_name,
+                                "file_type": "document",
+                                "path": scanned.path,
+                                "location": t.get("location"),
+                                "chunk_text": t.get("table_description", ""),
+                                "chunk_index": len(chunks) + t_idx,
+                                "is_table": True,
+                            },
+                        )
+                    )
+                chunk_records_data.append({
+                    "chunk_index": len(chunks) + t_idx,
+                    "page_number": None,
+                    "chunk_text": t.get("table_description", ""),
+                })
+
+            if points:
+                self._vector_service.upsert_points(points)
+
             self._metadata_service.upsert_chunks(
                 file_id=file_id,
                 file_name=scanned.file_name,
@@ -169,39 +211,78 @@ class IndexingService:
                 path=scanned.path,
                 chunks=chunk_records_data,
             )
-        else:
-            logger.warning("No extractable text in %s; indexing fallback text vector", scanned.path)
-            fallback_text = scanned.file_name.replace("_", " ").replace("-", " ")
-            vectors = self._text_embedder.encode_documents([fallback_text])
-            self._vector_service.upsert_text_chunk(
-                file_id=file_id,
-                file_name=scanned.file_name,
-                path=scanned.path,
-                page_number=1,
-                chunk_text=f"Document: {scanned.file_name}",
-                chunk_index=0,
-                vector=vectors[0],
-            )
-            self._metadata_service.upsert_chunks(
-                file_id=file_id,
+
+            self._metadata_service.upsert_file(
                 file_name=scanned.file_name,
                 file_type=FileType.document,
+                extension=scanned.extension,
                 path=scanned.path,
-                chunks=[{
-                    "chunk_index": 0,
-                    "page_number": 1,
-                    "chunk_text": f"Document: {scanned.file_name}",
-                }],
+                size_bytes=scanned.size_bytes,
+                chunk_count=len(chunks) + len(tables),
+            )
+        except Exception:
+            logger.warning("DocumentPipeline skipped on %s; using standard parser", scanned.path, exc_info=True)
+            pages = parse_document(scanned.path, scanned.extension)
+            chunks = chunk_pages(pages)
+
+            if chunks:
+                vectors = self._text_embedder.encode_documents([c.chunk_text for c in chunks])
+                chunk_records_data = []
+                for chunk, vector in zip(chunks, vectors):
+                    self._vector_service.upsert_text_chunk(
+                        file_id=file_id,
+                        file_name=scanned.file_name,
+                        path=scanned.path,
+                        page_number=chunk.page_number,
+                        chunk_text=chunk.chunk_text,
+                        chunk_index=chunk.chunk_index,
+                        vector=vector,
+                    )
+                    chunk_records_data.append({
+                        "chunk_index": chunk.chunk_index,
+                        "page_number": chunk.page_number,
+                        "chunk_text": chunk.chunk_text,
+                    })
+                self._metadata_service.upsert_chunks(
+                    file_id=file_id,
+                    file_name=scanned.file_name,
+                    file_type=FileType.document,
+                    path=scanned.path,
+                    chunks=chunk_records_data,
+                )
+            else:
+                fallback_text = scanned.file_name.replace("_", " ").replace("-", " ")
+                vectors = self._text_embedder.encode_documents([fallback_text])
+                self._vector_service.upsert_text_chunk(
+                    file_id=file_id,
+                    file_name=scanned.file_name,
+                    path=scanned.path,
+                    page_number=1,
+                    chunk_text=f"Document: {scanned.file_name}",
+                    chunk_index=0,
+                    vector=vectors[0],
+                )
+                self._metadata_service.upsert_chunks(
+                    file_id=file_id,
+                    file_name=scanned.file_name,
+                    file_type=FileType.document,
+                    path=scanned.path,
+                    chunks=[{
+                        "chunk_index": 0,
+                        "page_number": 1,
+                        "chunk_text": f"Document: {scanned.file_name}",
+                    }],
+                )
+
+            self._metadata_service.upsert_file(
+                file_name=scanned.file_name,
+                file_type=FileType.document,
+                extension=scanned.extension,
+                path=scanned.path,
+                size_bytes=scanned.size_bytes,
+                chunk_count=len(chunks) if chunks else 1,
             )
 
-        self._metadata_service.upsert_file(
-            file_name=scanned.file_name,
-            file_type=FileType.document,
-            extension=scanned.extension,
-            path=scanned.path,
-            size_bytes=scanned.size_bytes,
-            chunk_count=len(chunks) if chunks else 1,
-        )
 
     def _index_code(self, scanned: ScannedFile, file_id: str, root: str) -> None:
         parsed = parse_code(scanned.path, scanned.extension)
