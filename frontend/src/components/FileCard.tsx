@@ -4,16 +4,12 @@ import { api } from "../api/client";
 import type { DocumentResult, ImageResult } from "../api/types";
 
 interface Props {
-  // Code has its own card: it needs line numbers and whitespace-preserving
-  // rendering that neither a document snippet nor a thumbnail provides.
   result: DocumentResult | ImageResult;
 }
 
 export function FileCard({ result }: Props) {
   const [openError, setOpenError] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
-
-  const percent = Math.round(Math.max(0, Math.min(1, result.similarity)) * 100);
 
   async function handleOpen() {
     setOpenError(null);
@@ -63,12 +59,7 @@ export function FileCard({ result }: Props) {
         )}
       </div>
 
-      <div className="result-side">
-        <div className="match-value">{percent}%</div>
-        <div className="match-label">match</div>
-        <div className="meter">
-          <div className="meter-fill" style={{ width: `${percent}%` }} />
-        </div>
+      <div className="result-side" style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end" }}>
         <button className="btn secondary small" onClick={handleOpen}>
           Open file
         </button>

@@ -7,17 +7,8 @@ interface Props {
   result: CodeResult;
 }
 
-/**
- * A source-code hit.
- *
- * Rendered in a monospace block that preserves whitespace, because in Python
- * and YAML the indentation *is* the syntax — collapsing it the way the prose
- * snippet does would show something that is not the code in the file.
- */
 export function CodeCard({ result }: Props) {
   const [openError, setOpenError] = useState<string | null>(null);
-
-  const percent = Math.round(Math.max(0, Math.min(1, result.similarity)) * 100);
   const lineCount = result.line_end - result.line_start + 1;
 
   async function handleOpen() {
@@ -37,7 +28,7 @@ export function CodeCard({ result }: Props) {
           <span className="result-name">{result.file_name}</span>
           <span className="lang-tag">{result.language}</span>
           <span className="result-meta">
-            lines {result.line_start}–{result.line_end}
+            lines {result.line_start}–{result.line_end} ({lineCount} line{lineCount === 1 ? "" : "s"})
           </span>
         </div>
 
@@ -56,15 +47,7 @@ export function CodeCard({ result }: Props) {
         )}
       </div>
 
-      <div className="result-side">
-        <div className="match-value">{percent}%</div>
-        <div className="match-label">match</div>
-        <div className="meter">
-          <div className="meter-fill" style={{ width: `${percent}%` }} />
-        </div>
-        <div className="result-meta" style={{ marginTop: 6 }}>
-          {lineCount} line{lineCount === 1 ? "" : "s"}
-        </div>
+      <div className="result-side" style={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-end" }}>
         <button className="btn secondary small" onClick={handleOpen}>
           Open file
         </button>
