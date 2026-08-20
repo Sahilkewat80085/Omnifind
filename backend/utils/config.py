@@ -55,22 +55,7 @@ class Settings(BaseSettings):
     code_max_file_bytes: int = 1_000_000
 
     # Search
-    #
-    # Counts FILES, not chunks. Results are collapsed to one row per file
-    # before this cut, so 10 means ten distinct files. Cutting chunks first
-    # meant a single long file with ten matching chunks could consume the
-    # entire result list and the user saw one filename.
     search_top_k: int = 10
-
-    # Chunks pulled from Qdrant per file we intend to return.
-    #
-    # A source file or long PDF yields dozens of chunks and several can match
-    # one query, so fetching only `search_top_k` chunks cannot produce
-    # `search_top_k` files. The live index holds a 38-chunk perception module
-    # that on a related query occupies that many candidate slots by itself.
-    # Applies to the text partition only: an image is one vector, so it
-    # cannot crowd out another image.
-    search_candidate_factor: int = 8
 
     # Cross-modal score calibration.
     #

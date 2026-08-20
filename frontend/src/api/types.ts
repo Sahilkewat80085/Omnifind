@@ -35,6 +35,35 @@ export interface FileMetadata {
   language: string | null;
 }
 
+export interface VectorChunkInfo {
+  id: string;
+  chunk_index: number | null;
+  page_number: number | null;
+  line_start: number | null;
+  line_end: number | null;
+  symbol: string | null;
+  language: string | null;
+  chunk_text: string | null;
+  vector_name: string;
+  vector_dimensions: number;
+  vector_sample: number[];
+}
+
+export interface FileIndexDetail {
+  file_id: string;
+  file_name: string;
+  file_type: FileTypeName;
+  path: string;
+  size_bytes: number;
+  indexed_at: string;
+  chunk_count: number;
+  image_width: number | null;
+  image_height: number | null;
+  language: string | null;
+  index_model_info: string;
+  chunks: VectorChunkInfo[];
+}
+
 export interface IndexStats {
   total_files: number;
   total_documents: number;

@@ -26,6 +26,35 @@ class FileMetadata(BaseModel):
     language: str | None = None
 
 
+class VectorChunkInfo(BaseModel):
+    id: str
+    chunk_index: int | None = None
+    page_number: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    symbol: str | None = None
+    language: str | None = None
+    chunk_text: str | None = None
+    vector_name: str
+    vector_dimensions: int
+    vector_sample: list[float] = []
+
+
+class FileIndexDetail(BaseModel):
+    file_id: str
+    file_name: str
+    file_type: FileType
+    path: str
+    size_bytes: int
+    indexed_at: datetime
+    chunk_count: int
+    image_width: int | None = None
+    image_height: int | None = None
+    language: str | None = None
+    index_model_info: str
+    chunks: list[VectorChunkInfo] = []
+
+
 class OpenFileRequest(BaseModel):
     path: str
 

@@ -3,6 +3,7 @@ import uuid
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -172,6 +173,44 @@ class VectorService:
             limit=top_k,
         )
         return [SearchHit(score=r.score, payload=r.payload or {}) for r in results]
+
+    def get_points_by_path(self, path: str) -> list[dict[str, Any]]:
+        """Retrieve all indexed points and vectors for a given file path."""
+        try:
+            scroll_result, _ = self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=qmodels.Filter(
+                    must=[qmodels.FieldCondition(key="path", match=qmodels.MatchValue(value=path))]
+                ),
+                with_payload=True,
+                with_vectors=True,
+                limit=100,
+            )
+        except Exception:
+            logger.exception("Failed to scroll points for path: %s", path)
+            return []
+
+        points: list[dict[str, Any]] = []
+        for p in scroll_result:
+            vectors_info: dict[str, Any] = {}
+            if isinstance(p.vector, dict):
+                for v_name, v_val in p.vector.items():
+                    if isinstance(v_val, list):
+                        vectors_info[v_name] = {
+                            "dimensions": len(v_val),
+                            "sample": [round(float(x), 5) for x in v_val[:8]],
+                        }
+            elif isinstance(p.vector, list):
+                vectors_info["default"] = {
+                    "dimensions": len(p.vector),
+                    "sample": [round(float(x), 5) for x in p.vector[:8]],
+                }
+            points.append({
+                "id": str(p.id),
+                "payload": p.payload or {},
+                "vectors": vectors_info,
+            })
+        return points
 
     def delete_by_path(self, path: str) -> None:
         self._client.delete(

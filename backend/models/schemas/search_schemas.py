@@ -1,3 +1,4 @@
+from typing import Union
 from pydantic import BaseModel
 
 from models.schemas.file_schemas import FileType
@@ -25,12 +26,7 @@ class ImageResult(BaseModel):
 
 
 class CodeResult(BaseModel):
-    """A source-code hit.
-
-    Carries line numbers rather than a page number, and the symbol the chunk
-    defines, so the UI can show "rag_service.py · lines 106-135 · def
-    _retrieve_images" instead of an anonymous slice of a file.
-    """
+    """A source-code hit."""
 
     result_type: FileType = FileType.code
     file_id: str
@@ -45,10 +41,10 @@ class CodeResult(BaseModel):
     chunk_index: int
 
 
+SearchResult = Union[DocumentResult, ImageResult, CodeResult]
+
+
 class SearchResponse(BaseModel):
     query: str
-    results: list[DocumentResult | ImageResult | CodeResult]
-    # The file type read out of the query itself, e.g. "mountain image" → image.
-    # Surfaced rather than applied silently: a filter the user cannot see is
-    # indistinguishable from missing results when the guess is wrong.
+    results: list[SearchResult]
     filtered_to: FileType | None = None
