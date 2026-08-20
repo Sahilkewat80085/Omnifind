@@ -38,7 +38,7 @@ def calculate_filename_match_score(query_str: str, file_name: str) -> float:
         any(q_lower.startswith(f"{qw} ") for qw in _QUESTION_WORDS) or q_lower.endswith("?")
     )
 
-    # 1. Exact match of query string anywhere in filename (e.g. "nptel" in "nptel payment.pdf")
+    # 1. Exact match of query string anywhere in filename (e.g. "nptel" in "nptel payment.pdf", "python" in "test_python.py")
     if not is_question and q_lower in fn_lower:
         return 1.0
 
@@ -144,15 +144,30 @@ class MetadataService:
     def search_by_filename(
         self, query: str, file_type: FileType | None = None
     ) -> list[tuple[FileMetadata, float]]:
-        """Search metadata records where the file name matches the query words with fuzzy/token scoring."""
+        """Search metadata records where the file name or language matches the query."""
         try:
             all_files = self.list_files(file_type=file_type)
         except OperationalError:
             return []
 
+        q_clean = query.strip().lower()
         scored: list[tuple[FileMetadata, float]] = []
+
         for file_meta in all_files:
             score = calculate_filename_match_score(query, file_meta.file_name)
+
+            # Special keyword handling for programming languages / file extensions
+            if score < 0.80:
+                if q_clean in ("python", "py") and (
+                    file_meta.extension in (".py", ".pyw", ".ipynb")
+                    or (file_meta.language and file_meta.language.lower() == "python")
+                ):
+                    score = 1.0
+                elif q_clean in ("typescript", "ts") and file_meta.extension in (".ts", ".tsx"):
+                    score = 1.0
+                elif q_clean in ("javascript", "js") and file_meta.extension in (".js", ".jsx"):
+                    score = 1.0
+
             if score >= 0.80:
                 scored.append((file_meta, score))
 

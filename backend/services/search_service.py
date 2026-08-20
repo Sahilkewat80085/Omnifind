@@ -67,7 +67,9 @@ class SearchService:
         top_k: int | None = None,
         file_type: FileType | None = None,
     ) -> SearchResponse:
-        k = top_k or self._settings.search_top_k
+        # Default to a generous pool so users searching across large repositories
+        # see all matching files rather than having them cut off after 10.
+        k = top_k or 200
 
         intent = detect_intent(query)
         wants = file_type if file_type is not None else intent.file_type
@@ -76,7 +78,7 @@ class SearchService:
         results: list[DocumentResult | ImageResult | CodeResult] = []
         seen_paths: set[str] = set()
 
-        # 1. Exact & Fuzzy Filename Matches (100% precision / keyword search)
+        # 1. Exact & Fuzzy Filename & Language Matches (100% precision / keyword search)
         db = SessionLocal()
         try:
             meta_service = MetadataService(db)
@@ -196,7 +198,7 @@ class SearchService:
         # 4. Sort all results by similarity descending and collapse per file
         results.sort(key=lambda r: r.similarity, reverse=True)
         deduped = best_per_file(results)
-        return SearchResponse(query=query, results=deduped[:k], filtered_to=wants)
+        return SearchResponse(query=query, results=deduped if top_k is None else deduped[:k], filtered_to=wants)
 
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:
