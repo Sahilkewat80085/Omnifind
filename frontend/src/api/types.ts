@@ -49,6 +49,27 @@ export interface VectorChunkInfo {
   vector_sample: number[];
 }
 
+export interface DetectedConcept {
+  label: string;
+  confidence: number;
+  raw_similarity: number;
+}
+
+export interface DominantColor {
+  hex: string;
+  rgb: number[];
+}
+
+export interface VisualUnderstanding {
+  summary: string;
+  aspect_ratio: string;
+  dimensions: string;
+  format: string;
+  color_mode: string;
+  dominant_colors: DominantColor[];
+  detected_concepts: DetectedConcept[];
+}
+
 export interface FileIndexDetail {
   file_id: string;
   file_name: string;
@@ -61,6 +82,7 @@ export interface FileIndexDetail {
   image_height: number | null;
   language: string | null;
   index_model_info: string;
+  visual_understanding?: VisualUnderstanding | null;
   chunks: VectorChunkInfo[];
 }
 

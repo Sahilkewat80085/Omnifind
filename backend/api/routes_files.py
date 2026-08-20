@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.vectorstore.qdrant_client import VectorService
 from database.session import get_db
 from models.schemas.file_schemas import (
@@ -15,6 +16,7 @@ from models.schemas.file_schemas import (
     FileType,
     OpenFileRequest,
     VectorChunkInfo,
+    VisualUnderstanding,
 )
 from services.metadata_service import MetadataService
 
@@ -31,7 +33,7 @@ def list_files(
 
 @router.get("/{file_id}/index-details", response_model=FileIndexDetail)
 def get_file_index_details(file_id: str, db: Session = Depends(get_db)) -> FileIndexDetail:
-    """Retrieve detailed vector indexing metadata and chunk breakdown for a file."""
+    """Retrieve detailed vector indexing metadata, visual understanding, and chunk breakdown for a file."""
     record = MetadataService(db).get_by_id(file_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"No indexed file with id {file_id}")
@@ -64,6 +66,15 @@ def get_file_index_details(file_id: str, db: Session = Depends(get_db)) -> FileI
 
     chunks.sort(key=lambda c: (c.chunk_index if c.chunk_index is not None else 0))
 
+    visual_understanding: VisualUnderstanding | None = None
+    if record.file_type == FileType.image and Path(record.path).is_file():
+        try:
+            image_embedder = ImageEmbeddingService()
+            vu_data = image_embedder.understand_image(record.path)
+            visual_understanding = VisualUnderstanding.model_validate(vu_data)
+        except Exception:
+            pass
+
     model_info = (
         "OpenCLIP ViT-B-32 (512-dim visual embeddings · Cosine Distance)"
         if record.file_type == FileType.image
@@ -82,6 +93,7 @@ def get_file_index_details(file_id: str, db: Session = Depends(get_db)) -> FileI
         image_height=record.image_height,
         language=record.language,
         index_model_info=model_info,
+        visual_understanding=visual_understanding,
         chunks=chunks,
     )
 

@@ -69,7 +69,7 @@ export function IndexInspectorModal({ fileId, onClose }: Props) {
         <div className="modal-body">
           {loading && (
             <div className="modal-loading">
-              <span className="spinner" /> Loading vector indexing data from Qdrant…
+              <span className="spinner" /> Loading visual and vector indexing data from Qdrant…
             </div>
           )}
 
@@ -108,37 +108,72 @@ export function IndexInspectorModal({ fileId, onClose }: Props) {
                 </div>
               </div>
 
-              {/* If Image: Show visual preview & vector point */}
+              {/* If Image: Show rich visual understanding & concepts detected */}
               {detail.file_type === "image" && (
                 <div className="inspector-image-section">
                   <div className="section-label" style={{ marginTop: 16 }}>
-                    Image Visual & Vector Representation
+                    Visual Understanding & AI Concept Detection
                   </div>
+
                   <div className="inspector-image-container">
-                    <img
-                      src={api.fileContentUrl(detail.file_id)}
-                      alt={detail.file_name}
-                      className="inspector-image-preview"
-                    />
+                    <div className="image-preview-wrapper">
+                      <img
+                        src={api.fileContentUrl(detail.file_id)}
+                        alt={detail.file_name}
+                        className="inspector-image-preview"
+                      />
+                      {detail.visual_understanding?.dominant_colors && (
+                        <div className="color-palette-bar">
+                          {detail.visual_understanding.dominant_colors.map((c) => (
+                            <span
+                              key={c.hex}
+                              className="color-swatch"
+                              style={{ backgroundColor: c.hex }}
+                              title={`Dominant Color: ${c.hex} RGB(${c.rgb.join(", ")})`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="inspector-image-meta">
-                      <div>
-                        <strong>Dimensions:</strong> {detail.image_width} × {detail.image_height} px
-                      </div>
+                      {detail.visual_understanding && (
+                        <div className="understanding-summary-box">
+                          <div className="summary-title">👁️ Vision System Comprehension:</div>
+                          <div className="summary-text">{detail.visual_understanding.summary}</div>
+                        </div>
+                      )}
+
+                      {detail.visual_understanding?.detected_concepts &&
+                        detail.visual_understanding.detected_concepts.length > 0 && (
+                          <div className="concepts-list-section">
+                            <div className="concepts-title">Detected Visual Concepts & Confidence:</div>
+                            <div className="concepts-grid">
+                              {detail.visual_understanding.detected_concepts.map((concept) => (
+                                <div key={concept.label} className="concept-item">
+                                  <div className="concept-label-row">
+                                    <span className="concept-name">{concept.label}</span>
+                                    <span className="concept-pct">{concept.confidence}%</span>
+                                  </div>
+                                  <div className="concept-meter">
+                                    <div
+                                      className="concept-meter-fill"
+                                      style={{ width: `${Math.min(100, concept.confidence)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
                       {detail.chunks[0] && (
-                        <>
-                          <div style={{ marginTop: 8 }}>
-                            <strong>Qdrant Point ID:</strong>{" "}
-                            <code>{detail.chunks[0].id}</code>
+                        <div className="vector-sample-box" style={{ marginTop: 14 }}>
+                          <div className="vector-sample-label">
+                            Qdrant Point ID · {detail.chunks[0].vector_name} ({detail.chunks[0].vector_dimensions} dims):
                           </div>
-                          <div style={{ marginTop: 4 }}>
-                            <strong>Vector Payload ({detail.chunks[0].vector_name}):</strong>{" "}
-                            {detail.chunks[0].vector_dimensions} dimensions
-                          </div>
-                          <div className="vector-sample-box" style={{ marginTop: 6 }}>
-                            <div className="vector-sample-label">Normalized Vector Sample (first 8 dims):</div>
-                            <code>[{detail.chunks[0].vector_sample.join(", ")}…]</code>
-                          </div>
-                        </>
+                          <code>[{detail.chunks[0].vector_sample.join(", ")}…]</code>
+                        </div>
                       )}
                     </div>
                   </div>

@@ -989,7 +989,123 @@ code {
   border-radius: var(--radius);
   padding: 16px;
   margin-top: 10px;
+  align-items: flex-start;
 }
+
+.image-preview-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.inspector-image-preview {
+  max-width: 240px;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.color-palette-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  display: inline-block;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.understanding-summary-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.summary-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.summary-text {
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.concepts-list-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+
+.concepts-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+.concepts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.concept-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.concept-label-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.concept-name {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.concept-pct {
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.concept-meter {
+  height: 5px;
+  background: var(--surface-hover);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.concept-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f8cff, #38ef7d);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
 
 .inspector-image-preview {
   max-width: 240px;
