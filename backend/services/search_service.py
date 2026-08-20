@@ -74,21 +74,18 @@ class SearchService:
         results: list[DocumentResult | ImageResult | CodeResult] = []
 
         if wants in (None, FileType.document, FileType.code):
-            # Documents and code share the text partition, so one type can
-            # crowd the other out of a top-k before either is scored.
-            # Over-fetching keeps both represented; results[:k] still trims.
-            raw_text_hits = drop_missing_files(
-                self._vector_service.search_text(
-                    self._text_embedder.encode_query(intent.query), top_k=k * 3
-                )
-            )
-            is_code = lambda hit: hit.payload.get("file_type") == FileType.code.value  # noqa: E731
+            query_vector = self._text_embedder.encode_query(intent.query)
 
             if wants in (None, FileType.document):
+                doc_hits = drop_missing_files(
+                    self._vector_service.search_text(
+                        query_vector, top_k=k, file_type=FileType.document.value
+                    )
+                )
                 results += [
                     self._to_document_result(hit)
                     for hit in _calibrate(
-                        [h for h in raw_text_hits if not is_code(h)],
+                        doc_hits,
                         floor=self._settings.search_text_score_floor,
                         ceil=self._settings.search_text_score_ceil,
                         drop_below_floor=False,
@@ -96,12 +93,15 @@ class SearchService:
                 ]
 
             if wants in (None, FileType.code):
-                # Its own band, and dropped rather than clamped — see the
-                # measurements behind search_code_score_* in Settings.
+                code_hits = drop_missing_files(
+                    self._vector_service.search_text(
+                        query_vector, top_k=k, file_type=FileType.code.value
+                    )
+                )
                 results += [
                     self._to_code_result(hit)
                     for hit in _calibrate(
-                        [h for h in raw_text_hits if is_code(h)],
+                        code_hits,
                         floor=self._settings.search_code_score_floor,
                         ceil=self._settings.search_code_score_ceil,
                         drop_below_floor=True,
@@ -162,7 +162,7 @@ class SearchService:
     @staticmethod
     def _to_image_result(hit: SearchHit) -> ImageResult:
         p = hit.payload
-        dims = p.get("image_dimensions", {})
+        dims = p.get("image_dimensions") or {}
         return ImageResult(
             file_id=p["file_id"],
             file_name=p["file_name"],

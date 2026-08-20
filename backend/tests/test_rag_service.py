@@ -34,8 +34,16 @@ class FakeVectorService:
         self._hits = hits
         self._image_hits = image_hits or []
 
-    def search_text(self, query_vector: list[float], top_k: int) -> list[SearchHit]:
-        return self._hits[:top_k]
+    def search_text(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        file_type: str | None = None,
+    ) -> list[SearchHit]:
+        if file_type is None:
+            return self._hits[:top_k]
+        filtered = [h for h in self._hits if h.payload.get("file_type", "document") == file_type]
+        return filtered[:top_k]
 
     def search_image(self, query_vector: list[float], top_k: int) -> list[SearchHit]:
         return self._image_hits[:top_k]
