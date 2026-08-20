@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -40,6 +41,27 @@ class VectorChunkInfo(BaseModel):
     vector_sample: list[float] = []
 
 
+class DetectedConcept(BaseModel):
+    label: str
+    confidence: float
+    raw_similarity: float
+
+
+class DominantColor(BaseModel):
+    hex: str
+    rgb: list[int]
+
+
+class VisualUnderstanding(BaseModel):
+    summary: str
+    aspect_ratio: str
+    dimensions: str
+    format: str
+    color_mode: str
+    dominant_colors: list[DominantColor] = []
+    detected_concepts: list[DetectedConcept] = []
+
+
 class FileIndexDetail(BaseModel):
     file_id: str
     file_name: str
@@ -52,6 +74,7 @@ class FileIndexDetail(BaseModel):
     image_height: int | None = None
     language: str | None = None
     index_model_info: str
+    visual_understanding: VisualUnderstanding | None = None
     chunks: list[VectorChunkInfo] = []
 
 
