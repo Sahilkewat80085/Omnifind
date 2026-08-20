@@ -5,7 +5,6 @@ import { Banner } from "./components/Banner";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { ToastContainer, type ToastMessage } from "./components/Toast";
 import { useHealth } from "./hooks/useHealth";
-import { AskPage } from "./pages/AskPage";
 import { Dashboard } from "./pages/Dashboard";
 import { IndexPage } from "./pages/IndexPage";
 import { SearchPage } from "./pages/SearchPage";
@@ -65,7 +64,6 @@ export default function App() {
         {page === "dashboard" && <Dashboard onNavigate={setPage} />}
         {page === "index" && <IndexPage />}
         {page === "search" && <SearchPage />}
-        {page === "ask" && <AskPage health={health} />}
         {page === "settings" && (
           <SettingsPage health={health} online={online} onRefresh={refresh} />
         )}
