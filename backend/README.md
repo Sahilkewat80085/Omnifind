@@ -113,7 +113,7 @@ instance instead.
 | `/index/scan` | POST `{"path": "..."}` | Start indexing a folder (background job) |
 | `/index/status` | GET | Poll current indexing job progress |
 | `/index/stats` | GET | Dashboard stats: file/chunk counts, total size |
-| `/search?q=...` | GET | Semantic search across documents and images |
+| `/search?q=...` | GET | Semantic search across documents, images and code. Optional `&limit=` (counts **files**, not chunks — max 100) and `&file_type=document\|image\|code`, which overrides any type word in the query |
 | `/ask` | POST `{"q": "...", "top_k": null}` | Cited RAG answer over the indexed documents |
 | `/files` | GET | List indexed files (optional `?file_type=document\|image`) |
 | `/files/{file_id}/raw` | GET | Stream an indexed file's bytes (used for image thumbnails) |

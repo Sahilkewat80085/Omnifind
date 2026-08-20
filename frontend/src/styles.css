@@ -759,3 +759,33 @@ code {
   font-weight: 600;
   letter-spacing: 0.03em;
 }
+
+/* The type filter on the Search page. The selected chip has to read as a
+   state, not a button waiting to be pressed — an unmarked active filter is
+   indistinguishable from no filter, and silently hides two thirds of the
+   index. */
+.chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* "Explore more" foot of the result list. Deliberately quiet — it is the way
+   out when the wanted file is not in the first ten, not a call to action. */
+.more-results {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}

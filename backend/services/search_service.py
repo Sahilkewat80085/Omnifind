@@ -26,6 +26,31 @@ def drop_missing_files(hits: list[SearchHit]) -> list[SearchHit]:
     return [hit for hit in hits if Path(hit.payload.get("path", "")).is_file()]
 
 
+def best_per_file(
+    results: list[DocumentResult | ImageResult | CodeResult],
+) -> list[DocumentResult | ImageResult | CodeResult]:
+    """Collapse a ranked list to one row per file, keeping its strongest hit.
+
+    This has to happen *before* the top-k cut, not after it. A long PDF or
+    source file produces dozens of chunks and several of them can match the
+    same query, so trimming chunks first could spend the whole result list on
+    one file: the caller asks for ten results and gets one filename ten times,
+    or exactly one file once the UI de-duplicates. Cutting files instead makes
+    top-k mean what it says.
+
+    Input must already be sorted by descending similarity — the first time a
+    file appears is then its best passage.
+    """
+    seen: set[str] = set()
+    best: list[DocumentResult | ImageResult | CodeResult] = []
+    for result in results:
+        if result.file_id in seen:
+            continue
+        seen.add(result.file_id)
+        best.append(result)
+    return best
+
+
 def _calibrate(
     hits: list[SearchHit], *, floor: float, ceil: float, drop_below_floor: bool
 ) -> list[SearchHit]:
@@ -62,7 +87,12 @@ class SearchService:
         self._image_embedder = ImageEmbeddingService()
         self._settings = get_settings()
 
-    def search(self, query: str, top_k: int | None = None) -> SearchResponse:
+    def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        file_type: FileType | None = None,
+    ) -> SearchResponse:
         k = top_k or self._settings.search_top_k
 
         # "mountain image" names the type it wants. Handing back a PDF that
@@ -70,16 +100,28 @@ class SearchService:
         # semantic match, so a stated type becomes a filter on which
         # partitions are searched at all — not a ranking hint applied after.
         intent = detect_intent(query)
-        wants = intent.file_type
+
+        # An explicit `file_type` comes from the type filter in the UI and
+        # outranks anything read out of the wording: the user picked it on
+        # purpose, while the query word is a guess. When the two disagree the
+        # word evidently was not naming a container, so the raw query is
+        # embedded rather than the stripped one — dropping "image" from
+        # "image processing" while filtering to code would blur the subject.
+        wants = file_type or intent.file_type
+        embed_query = intent.query if wants == intent.file_type else query
+
         results: list[DocumentResult | ImageResult | CodeResult] = []
 
         if wants in (None, FileType.document, FileType.code):
             # Documents and code share the text partition, so one type can
-            # crowd the other out of a top-k before either is scored.
-            # Over-fetching keeps both represented; results[:k] still trims.
+            # crowd the other out of a top-k before either is scored, and one
+            # file's chunks can crowd out every other file. Over-fetching
+            # candidates keeps both represented; the per-file collapse and
+            # [:k] below still trim it back to k files.
             raw_text_hits = drop_missing_files(
                 self._vector_service.search_text(
-                    self._text_embedder.encode_query(intent.query), top_k=k * 3
+                    self._text_embedder.encode_query(embed_query),
+                    top_k=k * self._settings.search_candidate_factor,
                 )
             )
             is_code = lambda hit: hit.payload.get("file_type") == FileType.code.value  # noqa: E731
@@ -116,7 +158,11 @@ class SearchService:
                 for hit in _calibrate(
                     drop_missing_files(
                         self._vector_service.search_image(
-                            self._image_embedder.encode_text(intent.query), top_k=k
+                            # One image is one vector, so an image cannot crowd
+                            # another out the way a file's chunks can — k here,
+                            # not the over-fetched candidate count.
+                            self._image_embedder.encode_text(embed_query),
+                            top_k=k,
                         )
                     ),
                     floor=self._settings.search_image_score_floor,
@@ -128,7 +174,9 @@ class SearchService:
         results.sort(key=lambda r: r.similarity, reverse=True)
         # `query` stays as typed — the UI echoes it back, and showing the
         # stripped version would look like the search misread the question.
-        return SearchResponse(query=query, results=results[:k], filtered_to=wants)
+        return SearchResponse(
+            query=query, results=best_per_file(results)[:k], filtered_to=wants
+        )
 
     @staticmethod
     def _to_document_result(hit: SearchHit) -> DocumentResult:

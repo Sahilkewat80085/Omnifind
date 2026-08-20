@@ -1,6 +1,7 @@
 import type {
   AskResponse,
   FileMetadata,
+  FileTypeName,
   Health,
   IndexStats,
   IndexStatus,
@@ -94,8 +95,20 @@ export const api = {
       },
     ),
 
-  search: (query: string) =>
-    request<SearchResponse>("/search?q=" + encodeURIComponent(query)),
+  /**
+   * `limit` counts files, not chunks — the backend keeps only each file's best
+   * passage before trimming. The Search page asks for more than it renders so
+   * "explore more" reveals the rest without a second round trip.
+   */
+  search: (
+    query: string,
+    options: { limit?: number; fileType?: FileTypeName | null } = {},
+  ) => {
+    const params = new URLSearchParams({ q: query });
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.fileType) params.set("file_type", options.fileType);
+    return request<SearchResponse>("/search?" + params.toString());
+  },
 
   ask: (query: string, topK?: number) =>
     request<AskResponse>("/ask", {
