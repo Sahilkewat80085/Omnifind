@@ -1,5 +1,6 @@
 import type {
   AskResponse,
+  FileIndexDetail,
   FileMetadata,
   Health,
   IndexStats,
@@ -104,6 +105,9 @@ export const api = {
     }),
 
   listFiles: () => request<FileMetadata[]>("/files"),
+
+  fileIndexDetails: (fileId: string) =>
+    request<FileIndexDetail>(`/files/${fileId}/index-details`),
 
   openFile: (path: string) =>
     request<{ status: string }>("/files/open", {
