@@ -4,44 +4,24 @@ from core.embeddings.image_embedding_service import ImageEmbeddingService
 from core.embeddings.text_embedding_service import TextEmbeddingService
 from core.query.intent import detect_intent
 from core.vectorstore.qdrant_client import SearchHit, VectorService
-from models.schemas.file_schemas import FileType
+from database.session import SessionLocal
+from models.schemas.file_schemas import FileMetadata, FileType
 from models.schemas.search_schemas import CodeResult, DocumentResult, ImageResult, SearchResponse
+from services.metadata_service import MetadataService
 from utils.config import get_settings
 
 
 def drop_missing_files(hits: list[SearchHit]) -> list[SearchHit]:
-    """Discard hits whose file is no longer on disk.
-
-    The index is only reconciled with the disk when a folder is re-scanned,
-    so between a deletion and the next scan its vectors are still there and
-    still match. Returning one is the worst kind of wrong answer: it looks
-    like a real result until "Open" fails with file not found. Checking here
-    means a deleted file disappears from search the moment it is deleted,
-    and the scan-time prune is what stops it being checked forever.
-
-    One stat() per hit, on at most a few dozen paths — far cheaper than the
-    embedding work that produced them. Files on a disconnected network or
-    removable drive read as missing and drop out until it is back.
-    """
+    """Discard hits whose file is no longer on disk."""
     return [hit for hit in hits if Path(hit.payload.get("path", "")).is_file()]
 
 
 def _calibrate(
     hits: list[SearchHit], *, floor: float, ceil: float, drop_below_floor: bool
 ) -> list[SearchHit]:
-    """Map one modality's raw cosine scores onto a shared 0-1 scale.
-
-    bge (text) and CLIP (image) cosine scores live on different ranges, so raw
-    scores can't be compared across modalities. Each modality is rescaled
-    through its own measured noise floor and strong-match ceiling, which keeps
-    the absolute strength of a match — unlike min-max over the returned hits,
-    which always pins the best hit to 1.0 however weak it actually is.
-
-    `drop_below_floor` discards sub-noise hits instead of clamping them; used
-    for images, where an unrelated picture is an obvious wrong answer.
-    """
+    """Map one modality's raw cosine scores onto a shared 0-1 scale."""
     span = ceil - floor
-    if span <= 0:  # misconfigured; fall back to raw scores rather than divide by zero
+    if span <= 0:
         return hits
 
     calibrated = []
@@ -65,14 +45,65 @@ class SearchService:
     def search(self, query: str, top_k: int | None = None) -> SearchResponse:
         k = top_k or self._settings.search_top_k
 
-        # "mountain image" names the type it wants. Handing back a PDF that
-        # happens to discuss mountains is a wrong answer however strong the
-        # semantic match, so a stated type becomes a filter on which
-        # partitions are searched at all — not a ranking hint applied after.
         intent = detect_intent(query)
         wants = intent.file_type
         results: list[DocumentResult | ImageResult | CodeResult] = []
+        seen_paths: set[str] = set()
 
+        # 1. Exact & Fuzzy Filename Matches (100% precision / keyword search)
+        db = SessionLocal()
+        try:
+            meta_service = MetadataService(db)
+            filename_matches = meta_service.search_by_filename(intent.query, file_type=wants)
+            for file_meta, score in filename_matches:
+                if not Path(file_meta.path).is_file():
+                    continue
+                if file_meta.path in seen_paths:
+                    continue
+                seen_paths.add(file_meta.path)
+
+                if file_meta.file_type == FileType.document:
+                    results.append(
+                        DocumentResult(
+                            file_id=file_meta.id,
+                            file_name=file_meta.file_name,
+                            path=file_meta.path,
+                            similarity=score,
+                            page_number=1,
+                            chunk_text=f"File: {file_meta.file_name}",
+                            chunk_index=0,
+                        )
+                    )
+                elif file_meta.file_type == FileType.image:
+                    results.append(
+                        ImageResult(
+                            file_id=file_meta.id,
+                            file_name=file_meta.file_name,
+                            path=file_meta.path,
+                            similarity=score,
+                            width=file_meta.image_width or 0,
+                            height=file_meta.image_height or 0,
+                        )
+                    )
+                elif file_meta.file_type == FileType.code:
+                    results.append(
+                        CodeResult(
+                            file_id=file_meta.id,
+                            file_name=file_meta.file_name,
+                            path=file_meta.path,
+                            similarity=score,
+                            language=file_meta.language or "code",
+                            symbol=None,
+                            line_start=1,
+                            line_end=1,
+                            chunk_text=f"File: {file_meta.file_name}",
+                            chunk_index=0,
+                        )
+                    )
+        finally:
+            db.close()
+
+        # 2. Semantic Vector Search across Document & Code Partitions
         if wants in (None, FileType.document, FileType.code):
             query_vector = self._text_embedder.encode_query(intent.query)
 
@@ -82,15 +113,21 @@ class SearchService:
                         query_vector, top_k=k, file_type=FileType.document.value
                     )
                 )
-                results += [
-                    self._to_document_result(hit)
-                    for hit in _calibrate(
-                        doc_hits,
-                        floor=self._settings.search_text_score_floor,
-                        ceil=self._settings.search_text_score_ceil,
-                        drop_below_floor=False,
-                    )
-                ]
+                for hit in _calibrate(
+                    doc_hits,
+                    floor=self._settings.search_text_score_floor,
+                    ceil=self._settings.search_text_score_ceil,
+                    drop_below_floor=False,
+                ):
+                    doc_res = self._to_document_result(hit)
+                    # If this file was already matched by filename at 1.0, update its chunk text preview if helpful
+                    existing = next((r for r in results if r.path == doc_res.path), None)
+                    if existing is None:
+                        results.append(doc_res)
+                    elif isinstance(existing, DocumentResult) and existing.chunk_text.startswith("File:"):
+                        existing.chunk_text = doc_res.chunk_text
+                        existing.page_number = doc_res.page_number
+                        existing.chunk_index = doc_res.chunk_index
 
             if wants in (None, FileType.code):
                 code_hits = drop_missing_files(
@@ -98,36 +135,41 @@ class SearchService:
                         query_vector, top_k=k, file_type=FileType.code.value
                     )
                 )
-                results += [
-                    self._to_code_result(hit)
-                    for hit in _calibrate(
-                        code_hits,
-                        floor=self._settings.search_code_score_floor,
-                        ceil=self._settings.search_code_score_ceil,
-                        drop_below_floor=True,
-                    )
-                ]
-
-        if wants in (None, FileType.image):
-            # Reached only when images are actually wanted, so a code or
-            # document query never pays to load OpenCLIP.
-            results += [
-                self._to_image_result(hit)
                 for hit in _calibrate(
-                    drop_missing_files(
-                        self._vector_service.search_image(
-                            self._image_embedder.encode_text(intent.query), top_k=k
-                        )
-                    ),
-                    floor=self._settings.search_image_score_floor,
-                    ceil=self._settings.search_image_score_ceil,
+                    code_hits,
+                    floor=self._settings.search_code_score_floor,
+                    ceil=self._settings.search_code_score_ceil,
                     drop_below_floor=True,
-                )
-            ]
+                ):
+                    code_res = self._to_code_result(hit)
+                    existing = next((r for r in results if r.path == code_res.path), None)
+                    if existing is None:
+                        results.append(code_res)
+                    elif isinstance(existing, CodeResult) and existing.chunk_text.startswith("File:"):
+                        existing.chunk_text = code_res.chunk_text
+                        existing.symbol = code_res.symbol
+                        existing.line_start = code_res.line_start
+                        existing.line_end = code_res.line_end
 
+        # 3. Semantic Vector Search across Image Partition
+        if wants in (None, FileType.image):
+            image_hits = drop_missing_files(
+                self._vector_service.search_image(
+                    self._image_embedder.encode_text(intent.query), top_k=k
+                )
+            )
+            for hit in _calibrate(
+                image_hits,
+                floor=self._settings.search_image_score_floor,
+                ceil=self._settings.search_image_score_ceil,
+                drop_below_floor=True,
+            ):
+                img_res = self._to_image_result(hit)
+                if not any(r.path == img_res.path for r in results):
+                    results.append(img_res)
+
+        # 4. Sort all results by similarity descending (1.0 filename matches naturally sit at the top)
         results.sort(key=lambda r: r.similarity, reverse=True)
-        # `query` stays as typed — the UI echoes it back, and showing the
-        # stripped version would look like the search misread the question.
         return SearchResponse(query=query, results=results[:k], filtered_to=wants)
 
     @staticmethod
