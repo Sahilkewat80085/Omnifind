@@ -22,8 +22,9 @@ import type {
  * name that backend explicitly.
  */
 const DEFAULT_BASE_URL = import.meta.env.DEV
-  ? "http://127.0.0.1:8000"
-  : window.location.origin;
+  ? `http://${"localhost"}:8000`
+  : (typeof window !== "undefined" ? window.location.origin : "");
+
 
 const STORAGE_KEY = "omnifind.backendUrl";
 

@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     search_image_score_floor: float = 0.18
     search_image_score_ceil: float = 0.35
 
+
     # Code needs its own band even though it shares bge with documents.
     #
     # Two things push code's noise floor well above a document's. Every chunk

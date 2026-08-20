@@ -67,8 +67,6 @@ class SearchService:
         top_k: int | None = None,
         file_type: FileType | None = None,
     ) -> SearchResponse:
-        # Default to a generous pool so users searching across large repositories
-        # see all matching files rather than having them cut off after 10.
         k = top_k or 200
 
         intent = detect_intent(query)
@@ -78,7 +76,14 @@ class SearchService:
         results: list[DocumentResult | ImageResult | CodeResult] = []
         seen_paths: set[str] = set()
 
-        # 1. Exact & Fuzzy Filename & Language Matches (100% precision / keyword search)
+        # Strict visual modality separation:
+        # 1. If the user asked for images (e.g. query has "image", "picture", "photo", "jpg", or file_type is image):
+        #    Search ONLY images, and return NO documents or code.
+        # 2. If the user did NOT ask for images (e.g. "python", "invoice", "notes"):
+        #    Search ONLY documents & code, and return NO images.
+        searching_images = (wants == FileType.image)
+
+        # 1. Exact & Fuzzy Filename Matches
         db = SessionLocal()
         try:
             meta_service = MetadataService(db)
@@ -88,98 +93,55 @@ class SearchService:
                     continue
                 if file_meta.path in seen_paths:
                     continue
-                seen_paths.add(file_meta.path)
 
-                if file_meta.file_type == FileType.document:
-                    results.append(
-                        DocumentResult(
-                            file_id=file_meta.id,
-                            file_name=file_meta.file_name,
-                            path=file_meta.path,
-                            similarity=score,
-                            page_number=1,
-                            chunk_text=f"File: {file_meta.file_name}",
-                            chunk_index=0,
+                if searching_images:
+                    if file_meta.file_type == FileType.image:
+                        seen_paths.add(file_meta.path)
+                        results.append(
+                            ImageResult(
+                                file_id=file_meta.id,
+                                file_name=file_meta.file_name,
+                                path=file_meta.path,
+                                similarity=score,
+                                width=file_meta.image_width or 0,
+                                height=file_meta.image_height or 0,
+                            )
                         )
-                    )
-                elif file_meta.file_type == FileType.image:
-                    results.append(
-                        ImageResult(
-                            file_id=file_meta.id,
-                            file_name=file_meta.file_name,
-                            path=file_meta.path,
-                            similarity=score,
-                            width=file_meta.image_width or 0,
-                            height=file_meta.image_height or 0,
+                else:
+                    if file_meta.file_type == FileType.document:
+                        seen_paths.add(file_meta.path)
+                        results.append(
+                            DocumentResult(
+                                file_id=file_meta.id,
+                                file_name=file_meta.file_name,
+                                path=file_meta.path,
+                                similarity=score,
+                                page_number=1,
+                                chunk_text=f"File: {file_meta.file_name}",
+                                chunk_index=0,
+                            )
                         )
-                    )
-                elif file_meta.file_type == FileType.code:
-                    results.append(
-                        CodeResult(
-                            file_id=file_meta.id,
-                            file_name=file_meta.file_name,
-                            path=file_meta.path,
-                            similarity=score,
-                            language=file_meta.language or "code",
-                            symbol=None,
-                            line_start=1,
-                            line_end=1,
-                            chunk_text=f"File: {file_meta.file_name}",
-                            chunk_index=0,
+                    elif file_meta.file_type == FileType.code:
+                        seen_paths.add(file_meta.path)
+                        results.append(
+                            CodeResult(
+                                file_id=file_meta.id,
+                                file_name=file_meta.file_name,
+                                path=file_meta.path,
+                                similarity=score,
+                                language=file_meta.language or "code",
+                                symbol=None,
+                                line_start=1,
+                                line_end=1,
+                                chunk_text=f"File: {file_meta.file_name}",
+                                chunk_index=0,
+                            )
                         )
-                    )
         finally:
             db.close()
 
-        # 2. Semantic Vector Search across Document & Code Partitions
-        if wants in (None, FileType.document, FileType.code):
-            query_vector = self._text_embedder.encode_query(search_query)
-
-            if wants in (None, FileType.document):
-                doc_hits = drop_missing_files(
-                    self._vector_service.search_text(
-                        query_vector, top_k=k * 4, file_type=FileType.document.value
-                    )
-                )
-                for hit in _calibrate(
-                    doc_hits,
-                    floor=self._settings.search_text_score_floor,
-                    ceil=self._settings.search_text_score_ceil,
-                    drop_below_floor=False,
-                ):
-                    doc_res = self._to_document_result(hit)
-                    existing = next((r for r in results if r.path == doc_res.path), None)
-                    if existing is None:
-                        results.append(doc_res)
-                    elif isinstance(existing, DocumentResult) and existing.chunk_text.startswith("File:"):
-                        existing.chunk_text = doc_res.chunk_text
-                        existing.page_number = doc_res.page_number
-                        existing.chunk_index = doc_res.chunk_index
-
-            if wants in (None, FileType.code):
-                code_hits = drop_missing_files(
-                    self._vector_service.search_text(
-                        query_vector, top_k=k * 4, file_type=FileType.code.value
-                    )
-                )
-                for hit in _calibrate(
-                    code_hits,
-                    floor=self._settings.search_code_score_floor,
-                    ceil=self._settings.search_code_score_ceil,
-                    drop_below_floor=True,
-                ):
-                    code_res = self._to_code_result(hit)
-                    existing = next((r for r in results if r.path == code_res.path), None)
-                    if existing is None:
-                        results.append(code_res)
-                    elif isinstance(existing, CodeResult) and existing.chunk_text.startswith("File:"):
-                        existing.chunk_text = code_res.chunk_text
-                        existing.symbol = code_res.symbol
-                        existing.line_start = code_res.line_start
-                        existing.line_end = code_res.line_end
-
-        # 3. Semantic Vector Search across Image Partition
-        if wants in (None, FileType.image):
+        # 2. Semantic Search for Images ONLY when searching for images
+        if searching_images:
             image_hits = drop_missing_files(
                 self._vector_service.search_image(
                     self._image_embedder.encode_text(search_query), top_k=k * 4
@@ -194,6 +156,53 @@ class SearchService:
                 img_res = self._to_image_result(hit)
                 if not any(r.path == img_res.path for r in results):
                     results.append(img_res)
+        else:
+            # 3. Semantic Search for Documents & Code ONLY when NOT searching for images
+            if wants in (None, FileType.document, FileType.code):
+                query_vector = self._text_embedder.encode_query(search_query)
+
+                if wants in (None, FileType.document):
+                    doc_hits = drop_missing_files(
+                        self._vector_service.search_text(
+                            query_vector, top_k=k * 4, file_type=FileType.document.value
+                        )
+                    )
+                    for hit in _calibrate(
+                        doc_hits,
+                        floor=self._settings.search_text_score_floor,
+                        ceil=self._settings.search_text_score_ceil,
+                        drop_below_floor=False,
+                    ):
+                        doc_res = self._to_document_result(hit)
+                        existing = next((r for r in results if r.path == doc_res.path), None)
+                        if existing is None:
+                            results.append(doc_res)
+                        elif isinstance(existing, DocumentResult) and existing.chunk_text.startswith("File:"):
+                            existing.chunk_text = doc_res.chunk_text
+                            existing.page_number = doc_res.page_number
+                            existing.chunk_index = doc_res.chunk_index
+
+                if wants in (None, FileType.code):
+                    code_hits = drop_missing_files(
+                        self._vector_service.search_text(
+                            query_vector, top_k=k * 4, file_type=FileType.code.value
+                        )
+                    )
+                    for hit in _calibrate(
+                        code_hits,
+                        floor=self._settings.search_code_score_floor,
+                        ceil=self._settings.search_code_score_ceil,
+                        drop_below_floor=True,
+                    ):
+                        code_res = self._to_code_result(hit)
+                        existing = next((r for r in results if r.path == code_res.path), None)
+                        if existing is None:
+                            results.append(code_res)
+                        elif isinstance(existing, CodeResult) and existing.chunk_text.startswith("File:"):
+                            existing.chunk_text = code_res.chunk_text
+                            existing.symbol = code_res.symbol
+                            existing.line_start = code_res.line_start
+                            existing.line_end = code_res.line_end
 
         # 4. Sort all results by similarity descending and collapse per file
         results.sort(key=lambda r: r.similarity, reverse=True)
