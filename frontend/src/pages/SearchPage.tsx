@@ -8,53 +8,41 @@ import { EmptyState } from "../components/EmptyState";
 import { FileCard } from "../components/FileCard";
 import { LoadingIndicator } from "../components/LoadingIndicator";
 import { SearchBar } from "../components/SearchBar";
-import { RESULTS_PAGE_SIZE, presentResults } from "../utils/relevance";
+import { presentResults } from "../utils/relevance";
 
-// Naming a file type in the query filters to it — "mountain image" searches
-// pictures only. Plural, because they label a set of results.
-const TYPE_LABELS: Record<string, string> = {
-  document: "documents",
-  image: "images",
-  code: "source files",
-};
-
-// The type filter. `null` is "no filter", not a fourth type — the parameter is
-// left off the request entirely when nothing is chosen.
-const TYPE_FILTERS: { value: FileTypeName | null; label: string }[] = [
-  { value: null, label: "All types" },
-  { value: "document", label: "Documents" },
-  { value: "image", label: "Images" },
-  { value: "code", label: "Code" },
+const TYPE_FILTERS: Array<{ label: string; value: FileTypeName | null }> = [
+  { label: "All types", value: null },
+  { label: "Documents", value: "document" },
+  { label: "Images", value: "image" },
+  { label: "Code", value: "code" },
 ];
 
-// Fetched per search, well above the page size: "explore more" pages through
-// what is already here rather than firing another query, since re-embedding
-// the same question just to reveal row 11 would be slow for no gain.
-const FETCH_LIMIT = 50;
+const TYPE_LABELS: Record<string, string> = {
+  document: "Documents",
+  image: "Images",
+  code: "Code",
+};
 
-interface Outcome {
+interface SearchOutcome {
   response: SearchResponse;
-  /** The filter in force when this ran — the live one may already have moved on. */
   requestedType: FileTypeName | null;
 }
 
+const PAGE_SIZE = 10;
+const FETCH_LIMIT = 200;
+
 export function SearchPage() {
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [fileType, setFileType] = useState<FileTypeName | null>(null);
-  const [shown, setShown] = useState(RESULTS_PAGE_SIZE);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<SearchOutcome | null>(null);
+  const [page, setPage] = useState(1);
 
-  // Both arguments are passed in rather than read from state: a filter click
-  // sets state and searches in the same handler, where the new value is not
-  // visible on `fileType` yet.
   async function runSearch(text: string, type: FileTypeName | null) {
     setBusy(true);
     setError(null);
-    // Back to the first page — how far the user had paged through the previous
-    // result set means nothing against a different one.
-    setShown(RESULTS_PAGE_SIZE);
+    setPage(1);
     try {
       const response = await api.search(text, { limit: FETCH_LIMIT, fileType: type });
       setOutcome({ response, requestedType: type });
@@ -73,9 +61,6 @@ export function SearchPage() {
 
   function handleFilter(type: FileTypeName | null) {
     setFileType(type);
-    // Changing the filter with results on screen re-runs the same question at
-    // once. Leaving the old list sitting under a new filter would show rows
-    // that the filter excludes.
     if (query) void runSearch(query, type);
   }
 
@@ -125,37 +110,38 @@ export function SearchPage() {
 
       {!busy && outcome && (() => {
         const { response, requestedType } = outcome;
-        // De-duplicated and split before anything is counted, so the header
-        // never promises more rows than it renders.
-        const { ordered, confidentCount } = presentResults(response.results);
-        const visible = ordered.slice(0, shown);
-        const remaining = ordered.length - visible.length;
+        const { ordered } = presentResults(response.results);
+        const totalPages = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+        const currentPage = Math.min(page, totalPages);
+        const startIndex = (currentPage - 1) * PAGE_SIZE;
+        const endIndex = Math.min(startIndex + PAGE_SIZE, ordered.length);
+        const visible = ordered.slice(startIndex, endIndex);
 
-        // The chip exists to explain a filter the user cannot otherwise see —
-        // one read out of their wording. When they picked it from the row
-        // above, it is already on screen and repeating it is just noise.
         const readFromQuery = response.filtered_to && response.filtered_to !== requestedType;
         const typeWord = response.filtered_to ?? "";
         const typeLabel = TYPE_LABELS[response.filtered_to ?? ""] ?? null;
 
         return (
           <>
-            {visible.length > 0 && (
-              <div className="section-label">
-                {remaining > 0
-                  ? `${visible.length} of ${ordered.length} results for “${response.query}”`
-                  : `${ordered.length} result${ordered.length === 1 ? "" : "s"} for “${response.query}”`}
-                {readFromQuery && typeLabel && (
-                  <span className="filter-chip">{typeLabel} only</span>
+            {ordered.length > 0 && (
+              <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  {totalPages > 1
+                    ? `Showing ${startIndex + 1}–${endIndex} of ${ordered.length} results for “${response.query}”`
+                    : `${ordered.length} result${ordered.length === 1 ? "" : "s"} for “${response.query}”`}
+                  {readFromQuery && typeLabel && (
+                    <span className="filter-chip">{typeLabel} only</span>
+                  )}
+                </div>
+                {totalPages > 1 && (
+                  <span className="pagination-counter-text">
+                    Page {currentPage} of {totalPages}
+                  </span>
                 )}
               </div>
             )}
 
             {visible.length === 0 ? (
-              // When something narrowed the search, say what. Otherwise "No
-              // item matched" looks like broken search rather than an empty
-              // category — the user asked for an image and there simply is no
-              // matching image.
               <EmptyState
                 icon="⌕"
                 title={typeLabel ? `No matching ${typeLabel.slice(0, -1)}` : "No item matched"}
@@ -168,17 +154,8 @@ export function SearchPage() {
                 }
               />
             ) : (
-              visible.map((result, position) => (
+              visible.map((result) => (
                 <div key={result.file_id}>
-                  {/* Everything from here down scored below the presentation
-                      floor. Labelling the boundary is the point of showing
-                      them at all — an unmarked weak match reads as a
-                      confident one. */}
-                  {position === confidentCount && (
-                    <div className="section-label">Weaker matches</div>
-                  )}
-                  {/* Narrowing on result_type gives each card its exact shape —
-                      code needs line numbers, images need dimensions. */}
                   {result.result_type === "code" ? (
                     <CodeCard result={result} />
                   ) : (
@@ -188,15 +165,51 @@ export function SearchPage() {
               ))
             )}
 
-            {remaining > 0 && (
-              <div className="more-results">
-                <span className="muted">Not seeing the file you had in mind?</span>
+            {totalPages > 1 && (
+              <div className="pagination-bar">
                 <button
-                  className="btn secondary small"
-                  type="button"
-                  onClick={() => setShown((count) => count + RESULTS_PAGE_SIZE)}
+                  className="btn secondary small pagination-nav-btn"
+                  disabled={currentPage === 1}
+                  onClick={() => {
+                    setPage((p) => Math.max(1, p - 1));
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
                 >
-                  Explore {Math.min(remaining, RESULTS_PAGE_SIZE)} more
+                  ← Previous
+                </button>
+
+                <div className="pagination-pages">
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2)
+                    .map((p, idx, arr) => {
+                      const prev = arr[idx - 1];
+                      return (
+                        <span key={p} className="pagination-item-group">
+                          {prev && p - prev > 1 && <span className="pagination-ellipsis">…</span>}
+                          <button
+                            className={`pagination-page-btn ${p === currentPage ? "active" : ""}`}
+                            type="button"
+                            onClick={() => {
+                              setPage(p);
+                              window.scrollTo({ top: 0, behavior: "smooth" });
+                            }}
+                          >
+                            {p}
+                          </button>
+                        </span>
+                      );
+                    })}
+                </div>
+
+                <button
+                  className="btn secondary small pagination-nav-btn"
+                  disabled={currentPage === totalPages}
+                  onClick={() => {
+                    setPage((p) => Math.min(totalPages, p + 1));
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                >
+                  Next →
                 </button>
               </div>
             )}
